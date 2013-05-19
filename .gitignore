@@ -5,3 +5,4 @@
 *.ear
 
 web/WEB-INF/lib
+target
