@@ -5,4 +5,6 @@
 *.ear
 
 web/WEB-INF/lib
+web/WEB-INF/appengine-generated
+
 target
