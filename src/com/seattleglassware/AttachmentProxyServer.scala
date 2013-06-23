@@ -14,6 +14,7 @@ import scala.reflect._
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter( name: String ) extends EarlyReturn
+case class WrappedFailure[T](x: T) extends EarlyReturn
 
 case class InternalState( req: HttpServletRequest ) {
   def getParameter( s: String ) = Option( req.getParameter( s ) )
@@ -107,8 +108,8 @@ trait StatefulParameterOperations {
       case s =>
         val attr = s.getTypedOptionalSessionAttribute[T](attributeName)
         val result = attr match {
-          case Success[T](x) => x.right
-          case _ => None
+          case Success(x) => x.right
+          case x => WrappedFailure(x).left
         }
         ( s, result )
     }
