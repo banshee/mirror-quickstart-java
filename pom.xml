@@ -27,7 +27,27 @@ limitations under the License.
       <name>maven-gae-plugin repository</name>
       <url>http://maven-gae-plugin.googlecode.com/svn/repository</url>
     </repository>
-  </repositories>
+    <repository>
+      <id>localReleases</id>
+      <url>http://localhost:8081/nexus/content/groups/public</url>
+      <releases>
+        <enabled>true</enabled>
+      </releases>
+    </repository>
+    <repository>
+      <id>central</id>
+      <name>Maven Plugin Repository</name>
+      <url>http://repo1.maven.org/maven2</url>
+      <layout>default</layout>
+      <snapshots>
+        <enabled>false</enabled>
+      </snapshots>
+      <releases>
+        <updatePolicy>never</updatePolicy>
+      </releases>
+    </repository>
+    
+    </repositories>
 
   <dependencies>
     <!-- Java Google API Client Library -->
@@ -90,8 +110,11 @@ limitations under the License.
       <artifactId>guava</artifactId>
       <version>14.0.1</version>
     </dependency>
-
-
+    <dependency>
+      <groupId>org.scalaz</groupId>
+      <artifactId>scalaz-core_2.10</artifactId>
+      <version>7.0.0</version>
+    </dependency>    
   </dependencies>
 
   <build>
