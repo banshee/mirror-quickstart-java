@@ -1,6 +1,9 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <classpath>
-	<classpathentry kind="src" path="src"/>
+	<classpathentry kind="src" path="src/test/scala"/>
+	<classpathentry kind="src" path="src/main/java"/>
+	<classpathentry kind="src" path="src/test/java"/>
+	<classpathentry kind="src" path="src/main/scala"/>
 	<classpathentry kind="con" path="org.scala-ide.sdt.launching.SCALA_CONTAINER"/>
 	<classpathentry exported="true" kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
 	<classpathentry kind="lib" path="web/WEB-INF/lib/commons-codec-1.7.jar"/>
@@ -26,5 +29,7 @@
 	<classpathentry kind="lib" path="web/WEB-INF/lib/xpp3-1.1.4c.jar"/>
 	<classpathentry kind="lib" path="web/WEB-INF/lib/scalaz-core_2.10-7.0.0.jar"/>
 	<classpathentry kind="con" path="com.google.appengine.eclipse.core.GAE_CONTAINER/App Engine (11)"/>
+	<classpathentry kind="lib" path="web/WEB-INF/lib/scalatest_2.10-2.0.M6-SNAP24.jar"/>
+	<classpathentry kind="lib" path="web/WEB-INF/lib/junit-4.11.jar"/>
 	<classpathentry kind="output" path="web/WEB-INF/classes"/>
 </classpath>
