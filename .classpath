@@ -28,8 +28,9 @@
 	<classpathentry kind="lib" path="web/WEB-INF/lib/transaction-api-1.1.jar"/>
 	<classpathentry kind="lib" path="web/WEB-INF/lib/xpp3-1.1.4c.jar"/>
 	<classpathentry kind="lib" path="web/WEB-INF/lib/scalaz-core_2.10-7.0.0.jar"/>
-	<classpathentry kind="con" path="com.google.appengine.eclipse.core.GAE_CONTAINER/App Engine (11)"/>
 	<classpathentry kind="lib" path="web/WEB-INF/lib/scalatest_2.10-2.0.M6-SNAP24.jar"/>
 	<classpathentry kind="lib" path="web/WEB-INF/lib/junit-4.11.jar"/>
+	<classpathentry kind="con" path="com.google.appengine.eclipse.core.GAE_CONTAINER"/>
+	<classpathentry kind="lib" path="web/WEB-INF/lib/subcut_2.10-2.0.jar"/>
 	<classpathentry kind="output" path="web/WEB-INF/classes"/>
 </classpath>

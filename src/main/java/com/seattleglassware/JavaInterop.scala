@@ -5,9 +5,8 @@ import Scalaz._
 
 object JavaInterop {
   private def identical[T](x: T): T = x
-  def safelyCall[T](x: => T)(returnedValid: T => T, returnedNull: => T, threwException: Throwable => T): T =
+  def safelyCall[T, U](x: => U)(returnedValid: U => T, returnedNull: => T, threwException: Throwable => T): T =
     try {
-      println(s"testing val $x");
       x match {
         case null => returnedNull
         case x    => returnedValid(x)
@@ -16,8 +15,12 @@ object JavaInterop {
       case t: Throwable => threwException(t)
     }
 
-  def castNoNull[T](x: AnyRef) = x match {
+  def asInstanceOfNotNull[T](x: AnyRef) = x match {
     case null => throw new NullPointerException
     case x    => x.asInstanceOf[T]
+  }
+
+  implicit class AddsAsInstanceOfNotNull[T](x: AnyRef) {
+    def asInstanceOfNotNull[T](x: AnyRef) = JavaInterop.asInstanceOfNotNull[T](x)
   }
 }
