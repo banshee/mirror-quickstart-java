@@ -15,11 +15,15 @@ import com.escalatesoft.subcut.inject._
 import java.io.FileInputStream
 import scala.util.control.Exception._
 import java.util.Properties
+import com.google.api.client.extensions.appengine.http.UrlFetchTransport
+import com.google.api.client.json.jackson.JacksonFactory
+import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
+import scalaz.std.iterable
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
 case class WrappedFailure[T](x: T, extraInformation: Option[String] = None) extends EarlyReturn
-case class WrappedNull(extraInformation: String) extends EarlyReturn
+case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
 
 case class InternalState(req: HttpServletRequest) {
   def getParameter(s: String) = Option(req.getParameter(s))
@@ -151,31 +155,45 @@ object EitherTWithState {
 }
 
 case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectable {
-//  import bindingModule._
-//
-//  val GLASS_SCOPE = "https://www.googleapis.com/auth/glass.timeline " +
-//    "https://www.googleapis.com/auth/glass.location " +
-//    "https://www.googleapis.com/auth/userinfo.profile"
-//
-//  val oauthPropertiesFileLocation = inject[String]('oauthPropertiesFileLocation)
-//
-//  def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
-//    import StateStuff.stategen._
-//    for {
-//      fis <- ((new FileInputStream(oauthPropertiesFileLocation)).wrapped).liftState
-//      authProperties <- (new Properties()).liftState
-//    } yield authProperties
-//  }
+  import bindingModule._
+
+  val GLASS_SCOPE = "https://www.googleapis.com/auth/glass.timeline " +
+    "https://www.googleapis.com/auth/glass.location " +
+    "https://www.googleapis.com/auth/userinfo.profile"
+
+  val oauthPropertiesFileLocation = inject[String]('oauthPropertiesFileLocation)
+  val urlFetchTransport = inject[UrlFetchTransport]
+  val jacksonFactory = inject[JacksonFactory]
+  val credentialStore = inject[CredentialStore]
+
+  def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
+    import StateStuff.stategen._
+    def openStream(location: String) = safelyCall(new FileInputStream(oauthPropertiesFileLocation))(
+      f => f.right,
+      WrappedNull(s"attempting to open $location".some).left,
+      t => WrappedFailure(t).left)
+    implicit class Exwrap[T](t: => T) {
+      def catchExceptions(extra: Option[String] = None) =
+        catching(classOf[Throwable]).withApply(t => WrappedFailure(t, extra).left[T]) {
+          t match {
+            case null => WrappedNull(extra).left
+            case t    => t.right
+          }
+        }
+    }
+
+    import scala.collection.JavaConversions._
+    
+    for {
+      authPropertiesStream <- openStream(oauthPropertiesFileLocation)
+      authProperties <- (new Properties).catchExceptions()
+      _ <- authProperties.load(authPropertiesStream).catchExceptions("loading properties stream".some)
+      clientId <- authProperties.getProperty("client_id").catchExceptions()
+      clientSecret <- authProperties.getProperty("client_secret").catchExceptions()
+    } yield {
+      new GoogleAuthorizationCodeFlow.Builder(urlFetchTransport, jacksonFactory,
+          clientId, clientSecret, Seq(GLASS_SCOPE)).setAccessType("offline")
+          .setCredentialStore(credentialStore).build();
+    }
+  }
 }
-//
-//object SomeConfigurationModule extends NewBindingModule(module => {
-//  import module._ // optional but convenient - allows use of bind instead of module.bind
-//
-////  bind[Int] idBy PoolSize toSingle 3
-//
-//  //  bind [AuthUtil] toSingle (new AuthUtil)
-////  bind[AuthUtil] idBy 'snark toProvider { new AuthUtil }
-//  //  bind [AuthUtil] to newInstanceOf [AuthUtil]    // create a new instance of Fred every time - Fred require injection
-//  //  bind [AuthUtil] identifiedBy 'PoolSize to (new AuthUtil)       // bind an Int identified by PoolSize to constant 3
-//  //  bind [String] idBy ServerURL to "http://escalatesoft.com"
-//})

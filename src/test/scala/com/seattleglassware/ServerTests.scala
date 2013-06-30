@@ -23,6 +23,14 @@ class ServerTests extends FunSuite with ShouldMatchers {
     assert(result == "1")
   }
 
+  test("safelyCall can create \\/ results") {
+    val nullresult = safelyCall(returnsNull)(
+      returnedValid = _.right,
+      returnedNull = "gotnull".left,
+      threwException = t => "gotexception".left)
+    nullresult should be("gotnull".left)
+  }
+
   test("safelyCall can handle a valid result") {
     val result = safelyCall(returnsString)(
       returnedValid = identity,
@@ -41,14 +49,14 @@ class ServerTests extends FunSuite with ShouldMatchers {
 
   test("wrapping strings with exception handlers") {
     implicit class Exwrap(t: => String) {
-      def wrapped = catching(classOf[Throwable]).withApply (t => "gotexception") {
+      def wrapped = catching(classOf[Throwable]).withApply(t => "gotexception") {
         t
       }
     }
     def justThrowsAnException: String = throw new RuntimeException("snark")
     val s = justThrowsAnException.wrapped
     s should be("gotexception")
-    ("just a string").wrapped should be ("just a string")
+    ("just a string").wrapped should be("just a string")
   }
 
   def returnsNull: String = null
