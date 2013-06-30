@@ -28,6 +28,12 @@ case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
 
 object StateStuff {
   val stategen = StateGenerator[HttpRequestWrapper, EarlyReturn]
+  implicit class CatchExceptionsWrapper[T](t: => T) {
+    def catchExceptions(extra: => Option[String] = None) = safelyCall(t)(
+      x => x.right,
+      WrappedNull(extra).left,
+      t => WrappedFailure(t, extra).left)
+  }
 }
 
 class AttachmentProxyServer(implicit val bindingModule: BindingModule) extends HttpServlet with StatefulParameterOperations with Injectable {
@@ -60,6 +66,7 @@ trait HttpRequestWrapper {
     case _             => Other
   }
 }
+
 object HttpRequestWrapper {
   sealed abstract class HttpRequestType
   case object Http extends HttpRequestType
@@ -67,10 +74,10 @@ object HttpRequestWrapper {
   case object Missing extends HttpRequestType
   case object Other extends HttpRequestType
 
-//  abstract sealed class TypedOptionalSessionAttributeResult[T]
-//  case class Success[T](x: T) extends TypedOptionalSessionAttributeResult[T]
-//  case class MissingAttribute[T](attrName: String) extends TypedOptionalSessionAttributeResult[T]
-//  case class IncorrectType[T](attrName: String, result: AnyRef) extends TypedOptionalSessionAttributeResult[T]
+  //  abstract sealed class TypedOptionalSessionAttributeResult[T]
+  //  case class Success[T](x: T) extends TypedOptionalSessionAttributeResult[T]
+  //  case class MissingAttribute[T](attrName: String) extends TypedOptionalSessionAttributeResult[T]
+  //  case class IncorrectType[T](attrName: String, result: AnyRef) extends TypedOptionalSessionAttributeResult[T]
 
   implicit class HttpServletRequestWrapper(r: HttpServletRequest) extends HttpRequestWrapper {
     def getParameter(s: String) = Option(r.getParameter(s))
@@ -108,9 +115,9 @@ case class StateGenerator[StateType, FailureType] {
   type EitherTWithFailureType[F[+_], A] = EitherT[F, FailureType, A]
   type CombinedStateAndFailure[A] = EitherTWithFailureType[StateWithFixedStateType, A]
 
-    def liftStateA[A](s: StateWithFixedStateType[FailureType \/ A]): CombinedStateAndFailure[A] = EitherT(s)
+  def liftStateA[A](s: StateWithFixedStateType[FailureType \/ A]): CombinedStateAndFailure[A] = EitherT(s)
 
-    implicit class HasLiftFromStateWithFixedStateType[A](s: StateWithFixedStateType[FailureType \/ A]) {
+  implicit class HasLiftFromStateWithFixedStateType[A](s: StateWithFixedStateType[FailureType \/ A]) {
     def liftState: CombinedStateAndFailure[A] = EitherT(s)
   }
 
@@ -118,11 +125,9 @@ case class StateGenerator[StateType, FailureType] {
     def liftState: CombinedStateAndFailure[A] = EitherT(Applicative[StateWithFixedStateType].point(s))
   }
 
-  def convertThrowableToWrappedFailure[T] = catching(classOf[Throwable]).withApply(t => WrappedFailure(t).left[T])
-
-//  implicit class HasLiftFromAnswerType[A](s: A) {
-//    def liftState: CombinedStateAndFailure[A] = (s.right[FailureType]).liftState
-//  }
+  implicit class HasLiftFromAnswerType[A](s: A) {
+    def liftState: CombinedStateAndFailure[A] = (s.right[FailureType]).liftState
+  }
 
   implicit class HasLiftFromFailureType[A](s: FailureType) {
     def liftState: CombinedStateAndFailure[A] = (s.left[A]).liftState
@@ -134,33 +139,9 @@ case class StateGenerator[StateType, FailureType] {
   }
 }
 
-object EitherTWithState {
-  case class EarlyExit()
-
-  val fx = State[Int, EarlyExit \/ String] {
-    case s if s < 2 => (s + 1, "foo".right)
-    case s          => (s + 100, EarlyExit().left)
-  }
-
-  type StateA[+A] = State[Int, A]
-
-  val result = for {
-    a <- EitherT[StateA, EarlyExit, String](fx)
-    _ = println(s"a is $a")
-    b <- EitherT[StateA, EarlyExit, String](fx)
-    _ = println(s"b is $b")
-    c <- EitherT[StateA, EarlyExit, String](fx)
-    _ = println(s"c is $c")
-  } yield (a, b, c)
-
-  val (finalState, finalResult) = result.run(0)
-
-  println(finalState.toString())
-  println(finalResult.toString())
-}
-
 case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectable {
   import bindingModule._
+  import StateStuff._
 
   val GLASS_SCOPE = "https://www.googleapis.com/auth/glass.timeline " +
     "https://www.googleapis.com/auth/glass.location " +
@@ -171,22 +152,19 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
   val jacksonFactory = inject[JacksonFactory]
   val credentialStore = inject[CredentialStore]
 
-  implicit class CatchExceptionsWrapper[T](t: => T) {
-    def catchExceptions(extra: => Option[String] = None) = safelyCall(t)(
-      x => x.right,
-      WrappedNull(extra).left,
-      t => WrappedFailure(t, extra).left)
-  }
-
   def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
     for {
       authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation)).
         catchExceptions(s"open auth file $oauthPropertiesFileLocation".some)
+
       authProperties = new Properties
+
       _ <- authProperties.load(authPropertiesStream).
         catchExceptions("loading properties stream".some)
+
       clientId <- authProperties.getProperty("client_id").
         catchExceptions("error getting client id".some)
+
       clientSecret <- authProperties.getProperty("client_secret").
         catchExceptions()
     } yield {
