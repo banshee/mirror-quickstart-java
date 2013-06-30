@@ -7,17 +7,19 @@ import javax.servlet.http.HttpServletResponse
 import scalaz._
 import scalaz.Scalaz._
 import scalaz.State
-import scalaz.{ \/ => \/ }
 import scala.reflect.runtime.universe._
 import scala.reflect._
 import JavaInterop._
-
 import com.google.api.client.auth.oauth2._
-import com.escalatesoft.subcut.inject.BindingModule
+import com.escalatesoft.subcut.inject._
+import java.io.FileInputStream
+import scala.util.control.Exception._
+import java.util.Properties
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
-case class WrappedFailure[T](x: T) extends EarlyReturn
+case class WrappedFailure[T](x: T, extraInformation: Option[String] = None) extends EarlyReturn
+case class WrappedNull(extraInformation: String) extends EarlyReturn
 
 case class InternalState(req: HttpServletRequest) {
   def getParameter(s: String) = Option(req.getParameter(s))
@@ -107,7 +109,9 @@ case class StateGenerator[StateType, FailureType] {
     def liftState: CombinedStateAndFailure[A] = EitherT(Applicative[StateWithFixedStateType].point(s))
   }
 
-  implicit class HasLiftFromAnswerType[A](s: A) {
+  def convertThrowableToWrappedFailure[T] = catching(classOf[Throwable]).withApply(t => WrappedFailure(t).left[T])
+
+  implicit class HasLiftFromAnswerType[A](s: => A) {
     def liftState: CombinedStateAndFailure[A] = (s.right[FailureType]).liftState
   }
 
@@ -146,13 +150,32 @@ object EitherTWithState {
   println(finalResult.toString())
 }
 
-object AuthUtil {
-  val GLASS_SCOPE = "https://www.googleapis.com/auth/glass.timeline " +
-    "https://www.googleapis.com/auth/glass.location " +
-    "https://www.googleapis.com/auth/userinfo.profile"
-
-  def newAuthorizationCodeFlow(): AuthorizationCodeFlow = {
-    ???
-    
-  }
+case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectable {
+//  import bindingModule._
+//
+//  val GLASS_SCOPE = "https://www.googleapis.com/auth/glass.timeline " +
+//    "https://www.googleapis.com/auth/glass.location " +
+//    "https://www.googleapis.com/auth/userinfo.profile"
+//
+//  val oauthPropertiesFileLocation = inject[String]('oauthPropertiesFileLocation)
+//
+//  def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
+//    import StateStuff.stategen._
+//    for {
+//      fis <- ((new FileInputStream(oauthPropertiesFileLocation)).wrapped).liftState
+//      authProperties <- (new Properties()).liftState
+//    } yield authProperties
+//  }
 }
+//
+//object SomeConfigurationModule extends NewBindingModule(module => {
+//  import module._ // optional but convenient - allows use of bind instead of module.bind
+//
+////  bind[Int] idBy PoolSize toSingle 3
+//
+//  //  bind [AuthUtil] toSingle (new AuthUtil)
+////  bind[AuthUtil] idBy 'snark toProvider { new AuthUtil }
+//  //  bind [AuthUtil] to newInstanceOf [AuthUtil]    // create a new instance of Fred every time - Fred require injection
+//  //  bind [AuthUtil] identifiedBy 'PoolSize to (new AuthUtil)       // bind an Int identified by PoolSize to constant 3
+//  //  bind [String] idBy ServerURL to "http://escalatesoft.com"
+//})

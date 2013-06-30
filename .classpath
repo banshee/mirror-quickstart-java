@@ -6,6 +6,7 @@
 	<classpathentry kind="src" path="src/main/scala"/>
 	<classpathentry kind="con" path="org.scala-ide.sdt.launching.SCALA_CONTAINER"/>
 	<classpathentry exported="true" kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
+	<classpathentry kind="con" path="org.apache.ivyde.eclipse.cpcontainer.IVYDE_CONTAINER/?project=mirror-quickstart-java&amp;ivyXmlPath=pom.xml&amp;confs=*"/>
 	<classpathentry kind="lib" path="web/WEB-INF/lib/commons-codec-1.7.jar"/>
 	<classpathentry kind="lib" path="web/WEB-INF/lib/commons-logging-1.1.2.jar"/>
 	<classpathentry kind="lib" path="web/WEB-INF/lib/google-api-client-1.14.1-beta.jar"/>
