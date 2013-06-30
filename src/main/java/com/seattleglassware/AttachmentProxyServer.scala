@@ -172,28 +172,25 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
       f => f.right,
       WrappedNull(s"attempting to open $location".some).left,
       t => WrappedFailure(t).left)
-    implicit class Exwrap[T](t: => T) {
-      def catchExceptions(extra: Option[String] = None) =
-        catching(classOf[Throwable]).withApply(t => WrappedFailure(t, extra).left[T]) {
-          t match {
-            case null => WrappedNull(extra).left
-            case t    => t.right
-          }
-        }
+    implicit class CatchExceptionsWrapper[T](t: => T) {
+      def catchExceptions(extra: => Option[String] = None) = safelyCall(t)(
+        f => f.right,
+        WrappedNull(extra).left,
+        t => WrappedFailure(t).left)
     }
 
     import scala.collection.JavaConversions._
-    
+
     for {
-      authPropertiesStream <- openStream(oauthPropertiesFileLocation)
-      authProperties <- (new Properties).catchExceptions()
+      authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation)).catchExceptions(s"open auth file $oauthPropertiesFileLocation".some)
+      authProperties = new Properties
       _ <- authProperties.load(authPropertiesStream).catchExceptions("loading properties stream".some)
       clientId <- authProperties.getProperty("client_id").catchExceptions()
       clientSecret <- authProperties.getProperty("client_secret").catchExceptions()
     } yield {
       new GoogleAuthorizationCodeFlow.Builder(urlFetchTransport, jacksonFactory,
-          clientId, clientSecret, Seq(GLASS_SCOPE)).setAccessType("offline")
-          .setCredentialStore(credentialStore).build();
+        clientId, clientSecret, Seq(GLASS_SCOPE)).setAccessType("offline")
+        .setCredentialStore(credentialStore).build();
     }
   }
 }
