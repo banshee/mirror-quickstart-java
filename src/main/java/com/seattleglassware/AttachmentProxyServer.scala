@@ -34,14 +34,17 @@ object StateStuff {
   val stategen = StateGenerator[InternalState, EarlyReturn]
 }
 
-class AttachmentProxyServer extends HttpServlet with StatefulParameterOperations {
+class AttachmentProxyServer(implicit val bindingModule: BindingModule) extends HttpServlet with StatefulParameterOperations with Injectable {
   import StateStuff.stategen._
 
   class AttachmentProxyServlet extends HttpServlet {
     def go = for {
       attachmentId <- getParameter("attachment").liftState
       timelineItemId <- getParameter("timelineItem").liftState
-    } yield (attachmentId, timelineItemId)
+//      auth = AuthUtil()
+//      userid <- getParameter("user_id").liftState
+//      credential <- auth.getCredential(userid).liftState
+    } yield (attachmentId, timelineItemId, credential)
   }
 }
 
@@ -197,4 +200,9 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
     credential <- authorizationFlow.loadCredential(userId).
       catchExceptions("error locating credential".some)
   } yield credential
+
+  def clearUserId(userId: String) = for {
+    credential <- getCredential(userId)
+    deleted <- credentialStore.delete(userId, credential).catchExceptions()
+  } yield deleted
 }
