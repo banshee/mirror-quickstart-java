@@ -26,28 +26,23 @@ case class NoSuchParameter(name: String) extends EarlyReturn
 case class WrappedFailure[T](x: T, extraInformation: Option[String] = None) extends EarlyReturn
 case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
 
-case class InternalState(req: HttpServletRequest) {
-  def getParameter(s: String) = Option(req.getParameter(s))
-}
-
 object StateStuff {
-  val stategen = StateGenerator[InternalState, EarlyReturn]
+  val stategen = StateGenerator[HttpRequestWrapper, EarlyReturn]
 }
 
 class AttachmentProxyServer(implicit val bindingModule: BindingModule) extends HttpServlet with StatefulParameterOperations with Injectable {
   import StateStuff.stategen._
 
   class AttachmentProxyServlet extends HttpServlet {
-    def go = {
-      val t = getParameter("attachment").liftState
-      val t1 = getParameter("attachment")
+    def go: CombinedStateAndFailure[String] = {
       for {
-        attachmentId <- getParameter("attachment")
-        timelineItemId <- getParameter("timelineItem")
-        //      auth = AuthUtil()
-        //      userid <- getParameter("user_id").liftState
-        //      credential <- auth.getCredential(userid).liftState
-      } yield (attachmentId, timelineItemId)
+        attachmentId <- getParameter("attachment").liftState
+        attachmentId <- getParameter("attachment").liftState
+        timelineItemId <- getParameter("timelineItem").liftState
+        auth = AuthUtil()
+        userid <- getParameter("user_id").liftState
+        credential <- auth.getCredential(userid).liftState
+      } yield (timelineItemId)
     }
   }
 }
@@ -72,10 +67,10 @@ object HttpRequestWrapper {
   case object Missing extends HttpRequestType
   case object Other extends HttpRequestType
 
-  abstract sealed class TypedOptionalSessionAttributeResult[T]
-  case class Success[T](x: T) extends TypedOptionalSessionAttributeResult[T]
-  case class MissingAttribute[T](attrName: String) extends TypedOptionalSessionAttributeResult[T]
-  case class IncorrectType[T](attrName: String, result: AnyRef) extends TypedOptionalSessionAttributeResult[T]
+//  abstract sealed class TypedOptionalSessionAttributeResult[T]
+//  case class Success[T](x: T) extends TypedOptionalSessionAttributeResult[T]
+//  case class MissingAttribute[T](attrName: String) extends TypedOptionalSessionAttributeResult[T]
+//  case class IncorrectType[T](attrName: String, result: AnyRef) extends TypedOptionalSessionAttributeResult[T]
 
   implicit class HttpServletRequestWrapper(r: HttpServletRequest) extends HttpRequestWrapper {
     def getParameter(s: String) = Option(r.getParameter(s))
@@ -113,7 +108,9 @@ case class StateGenerator[StateType, FailureType] {
   type EitherTWithFailureType[F[+_], A] = EitherT[F, FailureType, A]
   type CombinedStateAndFailure[A] = EitherTWithFailureType[StateWithFixedStateType, A]
 
-  implicit class HasLiftFromStateWithFixedStateType[A](s: StateWithFixedStateType[FailureType \/ A]) {
+    def liftStateA[A](s: StateWithFixedStateType[FailureType \/ A]): CombinedStateAndFailure[A] = EitherT(s)
+
+    implicit class HasLiftFromStateWithFixedStateType[A](s: StateWithFixedStateType[FailureType \/ A]) {
     def liftState: CombinedStateAndFailure[A] = EitherT(s)
   }
 
@@ -123,9 +120,9 @@ case class StateGenerator[StateType, FailureType] {
 
   def convertThrowableToWrappedFailure[T] = catching(classOf[Throwable]).withApply(t => WrappedFailure(t).left[T])
 
-  implicit class HasLiftFromAnswerType[A](s: => A) {
-    def liftState: CombinedStateAndFailure[A] = (s.right[FailureType]).liftState
-  }
+//  implicit class HasLiftFromAnswerType[A](s: A) {
+//    def liftState: CombinedStateAndFailure[A] = (s.right[FailureType]).liftState
+//  }
 
   implicit class HasLiftFromFailureType[A](s: FailureType) {
     def liftState: CombinedStateAndFailure[A] = (s.left[A]).liftState
