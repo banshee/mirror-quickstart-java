@@ -19,6 +19,7 @@ import com.google.api.client.extensions.appengine.http.UrlFetchTransport
 import com.google.api.client.json.jackson.JacksonFactory
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
 import scalaz.std.iterable
+import scala.collection.JavaConversions._
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
@@ -166,31 +167,34 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
   val jacksonFactory = inject[JacksonFactory]
   val credentialStore = inject[CredentialStore]
 
+  implicit class CatchExceptionsWrapper[T](t: => T) {
+    def catchExceptions(extra: => Option[String] = None) = safelyCall(t)(
+      x => x.right,
+      WrappedNull(extra).left,
+      t => WrappedFailure(t, extra).left)
+  }
+
   def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
-    import StateStuff.stategen._
-    def openStream(location: String) = safelyCall(new FileInputStream(oauthPropertiesFileLocation))(
-      f => f.right,
-      WrappedNull(s"attempting to open $location".some).left,
-      t => WrappedFailure(t).left)
-    implicit class CatchExceptionsWrapper[T](t: => T) {
-      def catchExceptions(extra: => Option[String] = None) = safelyCall(t)(
-        f => f.right,
-        WrappedNull(extra).left,
-        t => WrappedFailure(t).left)
-    }
-
-    import scala.collection.JavaConversions._
-
     for {
-      authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation)).catchExceptions(s"open auth file $oauthPropertiesFileLocation".some)
+      authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation)).
+        catchExceptions(s"open auth file $oauthPropertiesFileLocation".some)
       authProperties = new Properties
-      _ <- authProperties.load(authPropertiesStream).catchExceptions("loading properties stream".some)
-      clientId <- authProperties.getProperty("client_id").catchExceptions()
-      clientSecret <- authProperties.getProperty("client_secret").catchExceptions()
+      _ <- authProperties.load(authPropertiesStream).
+        catchExceptions("loading properties stream".some)
+      clientId <- authProperties.getProperty("client_id").
+        catchExceptions("error getting client id".some)
+      clientSecret <- authProperties.getProperty("client_secret").
+        catchExceptions()
     } yield {
       new GoogleAuthorizationCodeFlow.Builder(urlFetchTransport, jacksonFactory,
         clientId, clientSecret, Seq(GLASS_SCOPE)).setAccessType("offline")
         .setCredentialStore(credentialStore).build();
     }
   }
+
+  def getCredential(userId: String) = for {
+    authorizationFlow <- newAuthorizationCodeFlow
+    credential <- authorizationFlow.loadCredential(userId).
+      catchExceptions("error locating credential".some)
+  } yield credential
 }
