@@ -38,13 +38,17 @@ class AttachmentProxyServer(implicit val bindingModule: BindingModule) extends H
   import StateStuff.stategen._
 
   class AttachmentProxyServlet extends HttpServlet {
-    def go = for {
-      attachmentId <- getParameter("attachment").liftState
-      timelineItemId <- getParameter("timelineItem").liftState
-//      auth = AuthUtil()
-//      userid <- getParameter("user_id").liftState
-//      credential <- auth.getCredential(userid).liftState
-    } yield (attachmentId, timelineItemId, credential)
+    def go = {
+      val t = getParameter("attachment").liftState
+      val t1 = getParameter("attachment")
+      for {
+        attachmentId <- getParameter("attachment")
+        timelineItemId <- getParameter("timelineItem")
+        //      auth = AuthUtil()
+        //      userid <- getParameter("user_id").liftState
+        //      credential <- auth.getCredential(userid).liftState
+      } yield (attachmentId, timelineItemId)
+    }
   }
 }
 
