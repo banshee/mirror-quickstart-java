@@ -12,6 +12,9 @@ import scalaz._
 import Scalaz._
 import JavaInterop._
 import scala.util.control.Exception._
+import com.seattleglassware._
+import com.escalatesoft.subcut.inject._
+import com.escalatesoft.subcut.inject.NewBindingModule._
 
 @RunWith(classOf[JUnitRunner])
 class ServerTests extends FunSuite with ShouldMatchers {
@@ -64,4 +67,29 @@ class ServerTests extends FunSuite with ShouldMatchers {
   def throwsSomething: String = throw new RuntimeException("bang")
   def returns1() = "1"
   def turnsExceptionInto2(t: Throwable) = "2"
+}
+
+@RunWith(classOf[JUnitRunner])
+class AuthUtilTests extends FunSuite with ShouldMatchers {
+  test("can create an AuthUtil instance") {
+    implicit val t = TestBindings.projectConfiguration
+    val a = new AuthUtil()
+  }
+}
+
+import BindingIdentifiers._
+
+object TestBindings {
+  implicit val projectConfiguration = newBindingModule { module =>
+    import module._ // can now use bind directly
+
+    bind[String] idBy OAuthPropertiesFileLocation toSingle "oauth.properties"
+    //    bind[X] toSingle Y
+    //    bind[Z] toProvider { codeToGetInstanceOfZ() }
+    //    bind[A] toProvider { implicit module => new AnotherInjectedClass(param1, param2) } // module singleton
+    //    bind[B] to newInstanceOf[Fred] // create a new instance of Fred every time - Fred require injection
+    //    bind[C] to moduleInstanceOf[Jane] // create a module scoped singleton Jane that will be used
+    //    bind[Int] idBy PoolSize to 3 // bind an Int identified by PoolSize to constant 3
+    //    bind[String] idBy ServerURL to "http://escalatesoft.com"
+  }
 }

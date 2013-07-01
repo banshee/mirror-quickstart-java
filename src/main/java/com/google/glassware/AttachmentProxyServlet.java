@@ -37,7 +37,8 @@ public class AttachmentProxyServlet extends HttpServlet {
   private static final Logger LOG = Logger.getLogger(AttachmentProxyServlet.class.getSimpleName());
 
   @Override
-  protected void doGet(HttpServletRequest req, HttpServletResponse resp) throws ServletException,
+  protected void doGet(HttpServletRequest req, HttpServletResponse resp)
+      throws ServletException,
       IOException {
     String attachmentId = req.getParameter("attachment");
     String timelineItemId = req.getParameter("timelineItem");
@@ -49,12 +50,14 @@ public class AttachmentProxyServlet extends HttpServlet {
     Credential credential = AuthUtil.getCredential(req);
 
     // Get the content type
-    String contentType =
-        MirrorClient.getAttachmentContentType(credential, timelineItemId, attachmentId);
+    String contentType = MirrorClient.getAttachmentContentType(credential,
+        timelineItemId,
+        attachmentId);
 
     // Get the attachment bytes
-    InputStream attachmentInputStream =
-        MirrorClient.getAttachmentInputStream(credential, timelineItemId, attachmentId);
+    InputStream attachmentInputStream = MirrorClient.getAttachmentInputStream(credential,
+        timelineItemId,
+        attachmentId);
 
     // Write it out
     resp.setContentType(contentType);

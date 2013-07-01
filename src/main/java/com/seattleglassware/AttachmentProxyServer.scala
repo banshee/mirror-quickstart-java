@@ -20,6 +20,7 @@ import com.google.api.client.json.jackson.JacksonFactory
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
 import scalaz.std.iterable
 import scala.collection.JavaConversions._
+import BindingIdentifiers._
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
@@ -147,7 +148,7 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
     "https://www.googleapis.com/auth/glass.location " +
     "https://www.googleapis.com/auth/userinfo.profile"
 
-  val oauthPropertiesFileLocation = inject[String]('oauthPropertiesFileLocation)
+  val oauthPropertiesFileLocation = inject[String](OAuthPropertiesFileLocation)
   val urlFetchTransport = inject[UrlFetchTransport]
   val jacksonFactory = inject[JacksonFactory]
   val credentialStore = inject[CredentialStore]
@@ -185,3 +186,9 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
     deleted <- credentialStore.delete(userId, credential).catchExceptions()
   } yield deleted
 }
+
+object BindingIdentifiers {
+  object OAuthPropertiesFileLocation extends BindingId // probably in another binding IDs file
+  object ServerURL extends BindingId
+}
+
