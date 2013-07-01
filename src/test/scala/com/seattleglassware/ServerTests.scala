@@ -15,6 +15,11 @@ import scala.util.control.Exception._
 import com.seattleglassware._
 import com.escalatesoft.subcut.inject._
 import com.escalatesoft.subcut.inject.NewBindingModule._
+import BindingIdentifiers._
+import com.google.api.client.extensions.appengine.http.UrlFetchTransport
+import com.google.api.client.json.jackson.JacksonFactory
+import com.google.api.client.auth.oauth2.MemoryCredentialStore
+import com.google.api.client.auth.oauth2.CredentialStore
 
 @RunWith(classOf[JUnitRunner])
 class ServerTests extends FunSuite with ShouldMatchers {
@@ -72,19 +77,19 @@ class ServerTests extends FunSuite with ShouldMatchers {
 @RunWith(classOf[JUnitRunner])
 class AuthUtilTests extends FunSuite with ShouldMatchers {
   test("can create an AuthUtil instance") {
-    implicit val t = TestBindings.projectConfiguration
+    println("pxj: " + System.getProperty("user.dir"))
+    implicit val bindingmodule = TestBindings.configuration
     val a = new AuthUtil()
+    val cf = a.newAuthorizationCodeFlow
+    cf should be('right)
   }
 }
 
-import BindingIdentifiers._
-
-object TestBindings {
-  implicit val projectConfiguration = newBindingModule { module =>
+object UniversalBindings {
+  implicit val configuration = newBindingModule { module =>
     import module._ // can now use bind directly
-
-    bind[String] idBy OAuthPropertiesFileLocation toSingle "oauth.properties"
-    //    bind[X] toSingle Y
+    bind[UrlFetchTransport] toSingle (new UrlFetchTransport)
+    bind[JacksonFactory] toSingle (new JacksonFactory)
     //    bind[Z] toProvider { codeToGetInstanceOfZ() }
     //    bind[A] toProvider { implicit module => new AnotherInjectedClass(param1, param2) } // module singleton
     //    bind[B] to newInstanceOf[Fred] // create a new instance of Fred every time - Fred require injection
@@ -92,4 +97,13 @@ object TestBindings {
     //    bind[Int] idBy PoolSize to 3 // bind an Int identified by PoolSize to constant 3
     //    bind[String] idBy ServerURL to "http://escalatesoft.com"
   }
+}
+
+object TestBindings {
+  val testSpecific = newBindingModule { module =>
+    module.bind[String] idBy OAuthPropertiesFileLocation toSingle "src/test/resources/oauth.properties"
+    module.bind[CredentialStore] toSingle (new MemoryCredentialStore)
+  }
+
+  implicit val configuration = testSpecific ~ UniversalBindings.configuration
 }
