@@ -67,6 +67,19 @@ class ServerTests extends FunSuite with ShouldMatchers {
     ("just a string").wrapped should be("just a string")
   }
 
+  test("lenses") {
+    case class Fnord(x: Foo)
+    case class Foo(y: String)
+    val f = Lens.lensg[Fnord, Foo](set = fn => str => Fnord(str), get = fn => fn.x)
+    val u = Lens.lensg[Foo, String](set = fn => str => Foo(str), get = fn => fn.y)
+    val v = f >=> u
+    val fn = Fnord(Foo("a"))
+    val r = v.get(fn)
+    var r1 = v.set(fn, "flurb")
+    r1 should be(Fnord(Foo("flurb")))
+  }
+
+  
   def returnsNull: String = null
   def returnsString: String = "str"
   def throwsSomething: String = throw new RuntimeException("bang")
@@ -77,7 +90,6 @@ class ServerTests extends FunSuite with ShouldMatchers {
 @RunWith(classOf[JUnitRunner])
 class AuthUtilTests extends FunSuite with ShouldMatchers {
   test("can create an AuthUtil instance") {
-    println("pxj: " + System.getProperty("user.dir"))
     implicit val bindingmodule = TestBindings.configuration
     val a = new AuthUtil()
     val cf = a.newAuthorizationCodeFlow
@@ -106,4 +118,7 @@ object TestBindings {
   }
 
   implicit val configuration = testSpecific ~ UniversalBindings.configuration
+}
+
+object Scalazstuff {
 }

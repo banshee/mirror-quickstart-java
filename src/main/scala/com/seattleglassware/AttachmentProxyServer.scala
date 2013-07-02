@@ -1,57 +1,74 @@
 package com.seattleglassware
 
-import javax.servlet.ServletException
+import java.io.FileInputStream
+import java.util.Properties
+import scala.collection.JavaConversions.seqAsJavaList
+import com.escalatesoft.subcut.inject.BindingId
+import com.escalatesoft.subcut.inject.BindingModule
+import com.escalatesoft.subcut.inject.Injectable
+import com.escalatesoft.subcut.inject.bindingIdToString
+import com.google.api.client.auth.oauth2.AuthorizationCodeFlow
+import com.google.api.client.auth.oauth2.Credential
+import com.google.api.client.auth.oauth2.CredentialStore
+import com.google.api.client.extensions.appengine.http.UrlFetchTransport
+import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
+import com.google.api.client.http.GenericUrl
+import com.google.api.client.json.jackson.JacksonFactory
+import com.google.api.services.mirror.Mirror
+import JavaInterop.asInstanceOfNotNull
+import JavaInterop.safelyCall
 import javax.servlet.http.HttpServlet
 import javax.servlet.http.HttpServletRequest
-import javax.servlet.http.HttpServletResponse
 import scalaz._
 import scalaz.Scalaz._
-import scalaz.State
-import scala.reflect.runtime.universe._
-import scala.reflect._
-import JavaInterop._
-import com.google.api.client.auth.oauth2._
-import com.escalatesoft.subcut.inject._
-import java.io.FileInputStream
-import scala.util.control.Exception._
-import java.util.Properties
-import com.google.api.client.extensions.appengine.http.UrlFetchTransport
-import com.google.api.client.json.jackson.JacksonFactory
-import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
-import scalaz.std.iterable
-import scala.collection.JavaConversions._
 import BindingIdentifiers._
+
+import StateStuff._
+import com.google.api.client.util.ByteStreams
+
+import java.io.{ InputStream, OutputStream }
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
 case class WrappedFailure[T](x: T, extraInformation: Option[String] = None) extends EarlyReturn
 case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
 
+sealed abstract class Effect
+case class SetResponseContentType(value: String) extends Effect
+case class CopyStreamToOutput(fromStream: InputStream) extends Effect
+
 object StateStuff {
-  val stategen = StateGenerator[HttpRequestWrapper, EarlyReturn]
+  val stategen = StateGenerator[GlasswareState, EarlyReturn]
   implicit class CatchExceptionsWrapper[T](t: => T) {
     def catchExceptions(extra: => Option[String] = None) = safelyCall(t)(
       x => x.right,
       WrappedNull(extra).left,
       t => WrappedFailure(t, extra).left)
   }
+  case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect])
+  val effectsThroughGlasswareState = Lens.lensg[GlasswareState, List[Effect]](set = gs => effects => gs.copy(effects = effects),
+    get = gs => gs.effects)
+  val requestThroughGlasswareState = Lens.lensg[GlasswareState, HttpRequestWrapper](set = gs => req => gs.copy(req = req),
+    get = gs => gs.req)
 }
 
-class AttachmentProxyServer(implicit val bindingModule: BindingModule) extends HttpServlet with StatefulParameterOperations with Injectable {
+class AttachmentProxyServlet(implicit val bindingModule: BindingModule) extends HttpServlet with StatefulParameterOperations with Injectable {
   import StateStuff.stategen._
 
-  class AttachmentProxyServlet extends HttpServlet {
-    def go: CombinedStateAndFailure[String] = {
-      for {
-        attachmentId <- getParameter("attachment").liftState
-        attachmentId <- getParameter("attachment").liftState
-        timelineItemId <- getParameter("timelineItem").liftState
-        auth = AuthUtil()
-        userid <- getParameter("user_id").liftState
-        credential <- auth.getCredential(userid).liftState
-      } yield (timelineItemId)
-    }
-  }
+  def go = for {
+    attachmentId <- getParameter("attachment").liftState
+    timelineItemId <- getParameter("timelineItem").liftState
+    auth = AuthUtil()
+    userid <- getParameter("user_id").liftState
+    credential <- auth.getCredential(userid).liftState
+    mc = new MirrorClient()
+    contentType <- mc.getAttachmentContentType(credential, timelineItemId, attachmentId).liftState
+    attachmentInputStream <- mc.getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
+    _ <- pushEffect(SetResponseContentType(contentType)).liftState
+    _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
+  } yield timelineItemId
+  
+  def fx = go.run(GlasswareState(HttpRequestWrapper.EmptyHttpRequestWrapper, List.empty))
 }
 
 trait HttpRequestWrapper {
@@ -89,6 +106,12 @@ object HttpRequestWrapper {
         NoSuchParameter(s).left,
         WrappedFailure(_).left)
   }
+  
+  object EmptyHttpRequestWrapper extends HttpRequestWrapper {
+    def getParameter(s: String) = None
+    def getScheme = "http".some
+    def getSessionAttribute[T](s: String): EarlyReturn \/ T = NoSuchParameter(s).left
+  }
 }
 
 trait StatefulParameterOperations {
@@ -98,16 +121,37 @@ trait StatefulParameterOperations {
   def wrapMissingParameter[T](s: String) = NoSuchParameter(s).left[T]
 
   def getParameter(parameterName: String) =
-    State[HttpRequestWrapper, EarlyReturn \/ String] {
+    State[GlasswareState, EarlyReturn \/ String] {
       case s =>
         val result =
-          s.getParameter(parameterName).fold(NoSuchParameter(parameterName).left[String])(_.right)
+          requestThroughGlasswareState.get(s).getParameter(parameterName).fold(NoSuchParameter(parameterName).left[String])(_.right)
         (s, result)
     }
 
+  //  def setAttribute(parameterName: String, value: String) =
+  //    State[GlasswareState, EarlyReturn \/ String] {
+  //      case s =>
+  //        val newstate = effectsThroughGlasswareState.mod(xs => SetAttribute(parameterName, value) :: xs, s)
+  //        (newstate, value.right)
+  //    }
+
+  def setResponseContentType(value: String) =
+    State[GlasswareState, EarlyReturn \/ String] {
+      case s =>
+        val newstate = effectsThroughGlasswareState.mod(xs => SetResponseContentType(value) :: xs, s)
+        (newstate, value.right)
+    }
+
+  def pushEffect(e: Effect) =
+    State[GlasswareState, List[Effect]] {
+      case s =>
+        val newstate = effectsThroughGlasswareState.mod(xs => e :: xs, s)
+        (newstate, effectsThroughGlasswareState.get(newstate))
+    }
+
   def getSessionAttribute[T](attributeName: String) =
-    State[HttpRequestWrapper, EarlyReturn \/ T] {
-      case s => (s, s.getSessionAttribute[T](attributeName))
+    State[GlasswareState, EarlyReturn \/ T] {
+      case s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
     }
 }
 
@@ -188,7 +232,37 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
 }
 
 object BindingIdentifiers {
-  object OAuthPropertiesFileLocation extends BindingId // probably in another binding IDs file
-  object ServerURL extends BindingId
+  object OAuthPropertiesFileLocation extends BindingId
+  object ApplicationName extends BindingId
 }
 
+class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable {
+  import bindingModule._
+
+  val urlFetchTransport = inject[UrlFetchTransport]
+  val jacksonFactory = inject[JacksonFactory]
+  val applicationName = inject[String](ApplicationName)
+
+  def getMirror(credential: Credential) = {
+    new Mirror.Builder(urlFetchTransport, jacksonFactory, credential).
+      setApplicationName(applicationName).build().right[EarlyReturn]
+  }
+
+  def getAttachmentContentType(credential: Credential, timelineItemId: String, attachmentId: String): EarlyReturn \/ String =
+    getAttachmentMetadata(credential, timelineItemId, attachmentId) map { t => t.getContentType }
+
+  def getAttachmentInputStream(credential: Credential, timelineItemId: String, attachmentId: String) = for {
+    mirror <- getMirror(credential)
+    attachments = mirror.timeline.attachments
+    attachmentsMetadata <- attachments.get(timelineItemId, attachmentId).execute.right
+    resp <- mirror.getRequestFactory
+      .buildGetRequest(new GenericUrl(attachmentsMetadata.getContentUrl)).execute.right
+    content <- resp.getContent.right
+  } yield content
+
+  def getAttachmentMetadata(credential: Credential, timelineItemId: String, attachmentId: String) = for {
+    mirror <- getMirror(credential)
+    attachments = mirror.timeline.attachments
+    attachmentsMetadata <- attachments.get(timelineItemId, attachmentId).execute.right
+  } yield attachmentsMetadata
+}
