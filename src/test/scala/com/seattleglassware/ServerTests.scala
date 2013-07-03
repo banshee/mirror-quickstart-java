@@ -21,6 +21,9 @@ import com.google.api.client.json.jackson.JacksonFactory
 import com.google.api.client.auth.oauth2.MemoryCredentialStore
 import com.google.api.client.auth.oauth2.CredentialStore
 import com.seattleglassware.StateStuff._
+import com.google.api.client.auth.oauth2.Credential
+import com.google.api.client.auth.oauth2.Credential.AccessMethod
+      import org.scalamock.scalatest.MockFactory
 
 @RunWith(classOf[JUnitRunner])
 class ServerTests extends FunSuite with ShouldMatchers {
@@ -107,10 +110,21 @@ class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
   }
 
   test("can run AttachmentProxyServlet") {
-    implicit val bindingmodule = TestBindings.configuration
+    implicit val testSpecificWithAuthorizedUser = newBindingModule { module =>
+      import module._
+      val credentialStore = new CredentialStore {
+         /** As seen from anonymous class $anon, the missing signatures are as follows.  
+          *  *  For convenience, these are usable as stub implementations.  */   
+        def delete(x$1: String,x$2: com.google.api.client.auth.oauth2.Credential): Unit = ???  
+        def load(x$1: String,x$2: com.google.api.client.auth.oauth2.Credential): Boolean = true 
+        def store(x$1: String,x$2: com.google.api.client.auth.oauth2.Credential): Unit = ()
+      }
+      bind[CredentialStore] toSingle credentialStore
+    } ~ TestBindings.configuration
+
     val a = new AttachmentProxyServletSupport()
     val b = a.attachmentProxyAction.run(GlasswareState(EmptyHttpRequestWrapper))
-    println(b.toString)
+    println("asdfff" + b.toString)
   }
 }
 
@@ -121,7 +135,16 @@ object TestBindings {
     bind[CredentialStore] toSingle (new MemoryCredentialStore)
   }
 
+  class TestCredential extends Credential(null.asInstanceOf[AccessMethod])
+
+  val testSpecificWithAuthorizedUser = newBindingModule { module =>
+    import module._
+    val credentialStore = new MemoryCredentialStore
+    bind[CredentialStore] toSingle credentialStore
+  }
+
   implicit val configuration = testSpecific ~ UniversalBindings.configuration
+  implicit val configurationWithAuthorizedTestUser = testSpecificWithAuthorizedUser ~ testSpecific ~ UniversalBindings.configuration
 }
 
 object StateProblem {

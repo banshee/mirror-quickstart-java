@@ -1,5 +1,6 @@
 package com.seattleglassware
 
+import scala.util.control.Exception._
 import java.io.FileInputStream
 import java.util.Properties
 import scala.collection.JavaConversions.seqAsJavaList
@@ -21,14 +22,15 @@ import javax.servlet.http.HttpServlet
 import javax.servlet.http.HttpServletRequest
 import scalaz._
 import scalaz.Scalaz._
-import BindingIdentifiers._
 import StateStuff._
 import com.google.api.client.util.ByteStreams
 import java.io.{ InputStream, OutputStream }
 import javax.servlet.http.HttpServletResponse
+import com.seattleglassware.BindingIdentifiers._
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
+case class NoSuchSessionAttribute(name: String) extends EarlyReturn
 case class WrappedFailure[T](x: T, extraInformation: Option[String] = None) extends EarlyReturn
 case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
 
@@ -68,7 +70,7 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
   def attachmentProxyAction: CombinedStateAndFailure[(String, String)] = for {
     attachmentId <- getParameter("attachment").liftState
     timelineItemId <- getParameter("timelineItem").liftState
-    userid <- getParameter("user_id").liftState
+    userid <- getSessionAttribute[String]("userId").liftState
 
     auth = AuthUtil()
     credential <- auth.getCredential(userid).liftState
@@ -82,10 +84,14 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
   } yield (attachmentId, timelineItemId)
 }
 
+import StateStuff._
+
 class AttachmentProxyServlet extends AttachmentProxyServletSupport()(ProjectConfiguration.configuration) {
-    override def doGet(req: HttpServletRequest , resp: HttpServletResponse) {
-      val result = attachmentProxyAction.run(GlasswareState(req))
-    }
+  override def doGet(req: HttpServletRequest, resp: HttpServletResponse) {
+    val (state, result) = attachmentProxyAction.run(GlasswareState(req))
+    val effects = effectsThroughGlasswareState.get(state)
+    executeEffects(effects, resp)
+  }
 }
 
 trait HttpRequestWrapper {
@@ -120,7 +126,7 @@ object HttpRequestWrapper {
     def getSessionAttribute[T](s: String): EarlyReturn \/ T =
       safelyCall(r.getSession.getAttribute(s))(
         asInstanceOfNotNull[T](_).right,
-        NoSuchParameter(s).left,
+        NoSuchSessionAttribute(s).left,
         WrappedFailure(_).left)
   }
 }
@@ -150,6 +156,16 @@ trait StatefulParameterOperations {
     State[GlasswareState, EarlyReturn \/ T] {
       case s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
     }
+
+  def executeEffects(effects: List[Effect], resp: HttpServletResponse) = effects foreach executeEffect(resp)
+
+  def executeEffect(resp: HttpServletResponse)(e: Effect) = e match {
+    case SetResponseContentType(s) => resp.setContentType(s)
+    case CopyStreamToOutput(stream) =>
+      ultimately(stream.close) {
+        ByteStreams.copy(stream, resp.getOutputStream)
+      }
+  }
 }
 
 case class StateGenerator[StateType, FailureType] {
@@ -231,15 +247,6 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
 class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable {
   import bindingModule._
 
-  val urlFetchTransport = inject[UrlFetchTransport]
-  val jacksonFactory = inject[JacksonFactory]
-  val applicationName = inject[String](ApplicationName)
-
-  def getAttachmentContentType(credential: Credential, timelineItemId: String, attachmentId: String): EarlyReturn \/ String = for {
-    (_, _, metadata) <- getAttachmentMetadata(credential, timelineItemId, attachmentId)
-    contentType <- metadata.getContentType.catchExceptions("no content type")
-  } yield (contentType)
-
   def getAttachmentInputStream(credential: Credential, timelineItemId: String, attachmentId: String) = for {
     (mirror, attachments, attachmentsMetadata) <- getAttachmentMetadata(credential, timelineItemId, attachmentId)
     url <- attachmentsMetadata.getContentUrl.catchExceptions("could not get content url for attachment")
@@ -251,7 +258,8 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
 
   def getAttachmentMetadata(credential: Credential, timelineItemId: String, attachmentId: String) = for {
     (mirror, attachments) <- getAttachments(credential)
-    attachmentsMetadata <- attachments.get(timelineItemId, attachmentId).execute.right
+    attachmentsRequest <- attachments.get(timelineItemId, attachmentId).catchExceptions("error creating attachments request")
+    attachmentsMetadata <- attachmentsRequest.execute.catchExceptions("error executing attachments fetch")
   } yield (mirror, attachments, attachmentsMetadata)
 
   def getAttachments(credential: Credential) = for {
@@ -262,5 +270,14 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
   def getMirror(credential: Credential) =
     new Mirror.Builder(urlFetchTransport, jacksonFactory, credential).
       setApplicationName(applicationName).build().right[EarlyReturn]
+
+  def getAttachmentContentType(credential: Credential, timelineItemId: String, attachmentId: String): EarlyReturn \/ String = for {
+    (_, _, metadata) <- getAttachmentMetadata(credential, timelineItemId, attachmentId)
+    contentType <- metadata.getContentType.catchExceptions("no content type")
+  } yield contentType
+
+  val urlFetchTransport = inject[UrlFetchTransport]
+  val jacksonFactory = inject[JacksonFactory]
+  val applicationName = inject[String](ApplicationName)
 
 }
