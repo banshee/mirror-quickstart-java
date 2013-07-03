@@ -45,7 +45,7 @@ public class AuthUtil {
    * Creates and returns a new {@link AuthorizationCodeFlow} for this app.
    */
   public static AuthorizationCodeFlow newAuthorizationCodeFlow() throws IOException {
-    FileInputStream authPropertiesStream = new FileInputStream("/Users/james/workspace/keys/mirror-quickstart-java/oauth.properties");
+    FileInputStream authPropertiesStream = new FileInputStream("oauth.properties");
     Properties authProperties = new Properties();
     authProperties.load(authPropertiesStream);
 

@@ -11,4 +11,4 @@ web/WEB-INF/appengine-generated
 web/WEB-INF/classes
 
 target
-
+web/oauth.properties

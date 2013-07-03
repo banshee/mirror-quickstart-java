@@ -228,11 +228,6 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
   } yield deleted
 }
 
-object BindingIdentifiers {
-  object OAuthPropertiesFileLocation extends BindingId
-  object ApplicationName extends BindingId
-}
-
 class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable {
   import bindingModule._
 

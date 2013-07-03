@@ -48,7 +48,7 @@
     <dependency>
       <groupId>com.google.api-client</groupId>
       <artifactId>google-api-client-appengine</artifactId>
-      <version>1.15.0-rc</version>
+      <version>1.14.1-beta</version>
     </dependency>
     <dependency>
       <groupId>com.google.apis</groupId>
@@ -60,12 +60,12 @@
     <dependency>
       <groupId>com.google.appengine</groupId>
       <artifactId>appengine-api-1.0-sdk</artifactId>
-      <version>1.8.0</version>
+      <version>1.7.6</version>
     </dependency>
     <dependency>
       <groupId>com.google.appengine</groupId>
       <artifactId>appengine-api-labs</artifactId>
-      <version>1.8.0</version>
+      <version>1.7.6</version>
     </dependency>
 
     <!-- everything else -->
@@ -93,11 +93,6 @@
       <groupId>org.codehaus.jackson</groupId>
       <artifactId>jackson-mapper-asl</artifactId>
       <version>1.9.11</version>
-    </dependency>
-    <dependency>
-      <groupId>javax.servlet</groupId>
-      <artifactId>servlet-api</artifactId>
-      <version>2.5</version>
     </dependency>
     <dependency>
       <groupId>javax.servlet</groupId>
