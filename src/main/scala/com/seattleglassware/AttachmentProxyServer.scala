@@ -22,11 +22,10 @@ import javax.servlet.http.HttpServletRequest
 import scalaz._
 import scalaz.Scalaz._
 import BindingIdentifiers._
-
 import StateStuff._
 import com.google.api.client.util.ByteStreams
-
 import java.io.{ InputStream, OutputStream }
+import javax.servlet.http.HttpServletResponse
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
@@ -40,35 +39,53 @@ case class CopyStreamToOutput(fromStream: InputStream) extends Effect
 object StateStuff {
   val stategen = StateGenerator[GlasswareState, EarlyReturn]
   implicit class CatchExceptionsWrapper[T](t: => T) {
-    def catchExceptions(extra: => Option[String] = None) = safelyCall(t)(
+    def catchExceptions(extra: => String = "(no additional information)") = safelyCall(t)(
       x => x.right,
-      WrappedNull(extra).left,
-      t => WrappedFailure(t, extra).left)
+      WrappedNull(extra.some).left,
+      t => WrappedFailure(t, extra.some).left)
   }
-  case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect])
+
+  implicit val partialMonoidForEarlyReturn = new Monoid[EarlyReturn] {
+    case object NoOp extends EarlyReturn
+    def zero = NoOp
+    def append(a: EarlyReturn, b: => EarlyReturn) =
+      (a, b) match {
+        case (NoOp, b) => b
+        case (a, NoOp) => a
+        case _         => throw new RuntimeException("this isnt really a Monoid")
+      }
+  }
+  case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
   val effectsThroughGlasswareState = Lens.lensg[GlasswareState, List[Effect]](set = gs => effects => gs.copy(effects = effects),
     get = gs => gs.effects)
   val requestThroughGlasswareState = Lens.lensg[GlasswareState, HttpRequestWrapper](set = gs => req => gs.copy(req = req),
     get = gs => gs.req)
 }
 
-class AttachmentProxyServlet(implicit val bindingModule: BindingModule) extends HttpServlet with StatefulParameterOperations with Injectable {
+class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends HttpServlet with StatefulParameterOperations with Injectable {
   import StateStuff.stategen._
 
-  def go = for {
+  def attachmentProxyAction: CombinedStateAndFailure[(String, String)] = for {
     attachmentId <- getParameter("attachment").liftState
     timelineItemId <- getParameter("timelineItem").liftState
-    auth = AuthUtil()
     userid <- getParameter("user_id").liftState
+
+    auth = AuthUtil()
     credential <- auth.getCredential(userid).liftState
+
     mc = new MirrorClient()
     contentType <- mc.getAttachmentContentType(credential, timelineItemId, attachmentId).liftState
     attachmentInputStream <- mc.getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
+
     _ <- pushEffect(SetResponseContentType(contentType)).liftState
     _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
-  } yield timelineItemId
-  
-  def fx = go.run(GlasswareState(HttpRequestWrapper.EmptyHttpRequestWrapper, List.empty))
+  } yield (attachmentId, timelineItemId)
+}
+
+class AttachmentProxyServlet extends AttachmentProxyServletSupport()(ProjectConfiguration.configuration) {
+    override def doGet(req: HttpServletRequest , resp: HttpServletResponse) {
+      val result = attachmentProxyAction.run(GlasswareState(req))
+    }
 }
 
 trait HttpRequestWrapper {
@@ -106,12 +123,6 @@ object HttpRequestWrapper {
         NoSuchParameter(s).left,
         WrappedFailure(_).left)
   }
-  
-  object EmptyHttpRequestWrapper extends HttpRequestWrapper {
-    def getParameter(s: String) = None
-    def getScheme = "http".some
-    def getSessionAttribute[T](s: String): EarlyReturn \/ T = NoSuchParameter(s).left
-  }
 }
 
 trait StatefulParameterOperations {
@@ -128,25 +139,11 @@ trait StatefulParameterOperations {
         (s, result)
     }
 
-  //  def setAttribute(parameterName: String, value: String) =
-  //    State[GlasswareState, EarlyReturn \/ String] {
-  //      case s =>
-  //        val newstate = effectsThroughGlasswareState.mod(xs => SetAttribute(parameterName, value) :: xs, s)
-  //        (newstate, value.right)
-  //    }
-
-  def setResponseContentType(value: String) =
-    State[GlasswareState, EarlyReturn \/ String] {
-      case s =>
-        val newstate = effectsThroughGlasswareState.mod(xs => SetResponseContentType(value) :: xs, s)
-        (newstate, value.right)
-    }
-
   def pushEffect(e: Effect) =
-    State[GlasswareState, List[Effect]] {
+    State[GlasswareState, Unit] {
       case s =>
-        val newstate = effectsThroughGlasswareState.mod(xs => e :: xs, s)
-        (newstate, effectsThroughGlasswareState.get(newstate))
+        val newstate = effectsThroughGlasswareState.mod(effects => e :: effects, s)
+        (newstate, ())
     }
 
   def getSessionAttribute[T](attributeName: String) =
@@ -200,18 +197,18 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
   def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
     for {
       authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation)).
-        catchExceptions(s"open auth file $oauthPropertiesFileLocation".some)
+        catchExceptions(s"open auth file $oauthPropertiesFileLocation")
 
       authProperties = new Properties
 
       _ <- authProperties.load(authPropertiesStream).
-        catchExceptions("loading properties stream".some)
+        catchExceptions("loading properties stream")
 
       clientId <- authProperties.getProperty("client_id").
-        catchExceptions("error getting client id".some)
+        catchExceptions("error getting client id")
 
       clientSecret <- authProperties.getProperty("client_secret").
-        catchExceptions()
+        catchExceptions("error getting client secret")
     } yield {
       new GoogleAuthorizationCodeFlow.Builder(urlFetchTransport, jacksonFactory,
         clientId, clientSecret, Seq(GLASS_SCOPE)).setAccessType("offline")
@@ -222,7 +219,7 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
   def getCredential(userId: String) = for {
     authorizationFlow <- newAuthorizationCodeFlow
     credential <- authorizationFlow.loadCredential(userId).
-      catchExceptions("error locating credential".some)
+      catchExceptions("error locating credential")
   } yield credential
 
   def clearUserId(userId: String) = for {
@@ -243,26 +240,32 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
   val jacksonFactory = inject[JacksonFactory]
   val applicationName = inject[String](ApplicationName)
 
-  def getMirror(credential: Credential) = {
-    new Mirror.Builder(urlFetchTransport, jacksonFactory, credential).
-      setApplicationName(applicationName).build().right[EarlyReturn]
-  }
-
-  def getAttachmentContentType(credential: Credential, timelineItemId: String, attachmentId: String): EarlyReturn \/ String =
-    getAttachmentMetadata(credential, timelineItemId, attachmentId) map { t => t.getContentType }
+  def getAttachmentContentType(credential: Credential, timelineItemId: String, attachmentId: String): EarlyReturn \/ String = for {
+    (_, _, metadata) <- getAttachmentMetadata(credential, timelineItemId, attachmentId)
+    contentType <- metadata.getContentType.catchExceptions("no content type")
+  } yield (contentType)
 
   def getAttachmentInputStream(credential: Credential, timelineItemId: String, attachmentId: String) = for {
-    mirror <- getMirror(credential)
-    attachments = mirror.timeline.attachments
-    attachmentsMetadata <- attachments.get(timelineItemId, attachmentId).execute.right
-    resp <- mirror.getRequestFactory
-      .buildGetRequest(new GenericUrl(attachmentsMetadata.getContentUrl)).execute.right
-    content <- resp.getContent.right
+    (mirror, attachments, attachmentsMetadata) <- getAttachmentMetadata(credential, timelineItemId, attachmentId)
+    url <- attachmentsMetadata.getContentUrl.catchExceptions("could not get content url for attachment")
+    genericUrl <- new GenericUrl(url).catchExceptions(s"could not build genericUrl from [$url]")
+    request = mirror.getRequestFactory.buildGetRequest(genericUrl)
+    resp <- request.execute.catchExceptions("error fetching a mirror request")
+    content <- resp.getContent.catchExceptions("error getting the content of an attachment")
   } yield content
 
   def getAttachmentMetadata(credential: Credential, timelineItemId: String, attachmentId: String) = for {
+    (mirror, attachments) <- getAttachments(credential)
+    attachmentsMetadata <- attachments.get(timelineItemId, attachmentId).execute.right
+  } yield (mirror, attachments, attachmentsMetadata)
+
+  def getAttachments(credential: Credential) = for {
     mirror <- getMirror(credential)
     attachments = mirror.timeline.attachments
-    attachmentsMetadata <- attachments.get(timelineItemId, attachmentId).execute.right
-  } yield attachmentsMetadata
+  } yield (mirror, attachments)
+
+  def getMirror(credential: Credential) =
+    new Mirror.Builder(urlFetchTransport, jacksonFactory, credential).
+      setApplicationName(applicationName).build().right[EarlyReturn]
+
 }

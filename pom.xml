@@ -57,8 +57,33 @@
     </dependency>
 
     <!-- App Engine -->
+    <dependency>
+      <groupId>com.google.appengine</groupId>
+      <artifactId>appengine-api-1.0-sdk</artifactId>
+      <version>1.8.0</version>
+    </dependency>
+    <dependency>
+      <groupId>com.google.appengine</groupId>
+      <artifactId>appengine-api-labs</artifactId>
+      <version>1.8.0</version>
+    </dependency>
 
     <!-- everything else -->
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-library</artifactId>
+      <version>2.10.2</version>
+    </dependency>
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-compiler</artifactId>
+      <version>2.10.2</version>
+    </dependency>
+    <dependency>
+      <groupId>org.scala-lang</groupId>
+      <artifactId>scala-reflect</artifactId>
+      <version>2.10.2</version>
+    </dependency>
     <dependency>
       <groupId>org.codehaus.jackson</groupId>
       <artifactId>jackson-core-asl</artifactId>
@@ -97,13 +122,13 @@
     <dependency>
       <groupId>org.scalaz</groupId>
       <artifactId>scalaz-core_2.10</artifactId>
-      <version>7.0.0</version>
+      <version>7.0.1</version>
     </dependency>
     <dependency>
       <groupId>com.escalatesoft.subcut</groupId>
       <artifactId>subcut_2.10</artifactId>
       <version>2.0</version>
-    </dependency>    
+    </dependency>
 
     <dependency>
       <groupId>org.scalatest</groupId>

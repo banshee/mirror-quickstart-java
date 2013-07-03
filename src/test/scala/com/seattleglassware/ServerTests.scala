@@ -20,6 +20,7 @@ import com.google.api.client.extensions.appengine.http.UrlFetchTransport
 import com.google.api.client.json.jackson.JacksonFactory
 import com.google.api.client.auth.oauth2.MemoryCredentialStore
 import com.google.api.client.auth.oauth2.CredentialStore
+import com.seattleglassware.StateStuff._
 
 @RunWith(classOf[JUnitRunner])
 class ServerTests extends FunSuite with ShouldMatchers {
@@ -79,7 +80,6 @@ class ServerTests extends FunSuite with ShouldMatchers {
     r1 should be(Fnord(Foo("flurb")))
   }
 
-  
   def returnsNull: String = null
   def returnsString: String = "str"
   def throwsSomething: String = throw new RuntimeException("bang")
@@ -94,6 +94,23 @@ class AuthUtilTests extends FunSuite with ShouldMatchers {
     val a = new AuthUtil()
     val cf = a.newAuthorizationCodeFlow
     cf should be('right)
+  }
+}
+
+@RunWith(classOf[JUnitRunner])
+class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
+  object EmptyHttpRequestWrapper extends HttpRequestWrapper {
+    val items = Map("attachment" -> "atch", "timelineItem" -> "tli", "user_id" -> "one")
+    def getParameter(s: String) = items.get(s)
+    def getScheme = "http".some
+    def getSessionAttribute[T](s: String): EarlyReturn \/ T = NoSuchParameter(s).left
+  }
+
+  test("can run AttachmentProxyServlet") {
+    implicit val bindingmodule = TestBindings.configuration
+    val a = new AttachmentProxyServletSupport()
+    val b = a.attachmentProxyAction.run(GlasswareState(EmptyHttpRequestWrapper))
+    println(b.toString)
   }
 }
 
@@ -113,12 +130,54 @@ object UniversalBindings {
 
 object TestBindings {
   val testSpecific = newBindingModule { module =>
-    module.bind[String] idBy OAuthPropertiesFileLocation toSingle "src/test/resources/oauth.properties"
+    module.bind[String] idBy OAuthPropertiesFileLocation toSingle "/Users/james/workspace/keys/mirror-quickstart-java/oauth.properties"
     module.bind[CredentialStore] toSingle (new MemoryCredentialStore)
   }
 
   implicit val configuration = testSpecific ~ UniversalBindings.configuration
 }
 
-object Scalazstuff {
+object ProjectConfiguration {
+  implicit val configuration = TestBindings.configuration
+}
+
+object StateProblem {
+  case class MyStateType
+  case class MyRightType
+  case class MyLeftType
+
+  type StateWithFixedStateType[+A] = State[MyStateType, A]
+  type EitherTWithFailureType[F[+_], A] = EitherT[F, MyLeftType, A]
+  type CombinedStateAndFailure[A] = EitherTWithFailureType[StateWithFixedStateType, A]
+
+  def doSomething: CombinedStateAndFailure[MyRightType] = {
+    val x = State[MyStateType, MyLeftType \/ MyRightType] {
+      case s => (s, MyRightType().right)
+    }
+    EitherT[StateWithFixedStateType, MyLeftType, MyRightType](x)
+  }
+
+  val comprehension = for {
+    a <- doSomething
+    b <- doSomething
+  } yield (a, b)
+
+  implicit val feedTheCompiler = new Monoid[MyLeftType] {
+    override def zero = MyLeftType()
+    override def append(a: MyLeftType, b: => MyLeftType) = a
+  }
+
+  val otherComprehension = for {
+    // this gets a compile error:
+    // could not find implicit value for parameter M: scalaz.Monoid[com.seattleglassware.StateProblem.MyLeftType]
+    (x, y) <- comprehension
+    z <- doSomething
+  } yield (x, y, z)
+
+  // 
+  val otherComprehensionWithWorkaround = for {
+    xandy <- comprehension
+    (x, y) = xandy
+    z <- doSomething
+  } yield (x, y, z)
 }

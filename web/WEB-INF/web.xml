@@ -60,7 +60,7 @@ limitations under the License.
 
   <servlet>
     <servlet-name>attachmentproxy</servlet-name>
-    <servlet-class>com.google.glassware.AttachmentProxyServlet</servlet-class>
+    <servlet-class>com.seattleglassware.AttachmentProxyServlet</servlet-class>
   </servlet>
   <servlet-mapping>
     <servlet-name>attachmentproxy</servlet-name>
