@@ -23,7 +23,7 @@ import com.google.api.client.auth.oauth2.CredentialStore
 import com.seattleglassware.StateStuff._
 import com.google.api.client.auth.oauth2.Credential
 import com.google.api.client.auth.oauth2.Credential.AccessMethod
-      import org.scalamock.scalatest.MockFactory
+import org.scalamock.scalatest.MockFactory
 
 @RunWith(classOf[JUnitRunner])
 class ServerTests extends FunSuite with ShouldMatchers {
@@ -107,17 +107,22 @@ class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
     def getParameter(s: String) = items.get(s)
     def getScheme = "http".some
     def getSessionAttribute[T](s: String): EarlyReturn \/ T = NoSuchParameter(s).left
+    def getHostname: String = ???
+    def getRequestGenericUrl: com.google.api.client.http.GenericUrl = ???
+    def getRequestURI: String = ???
   }
 
   test("can run AttachmentProxyServlet") {
     implicit val testSpecificWithAuthorizedUser = newBindingModule { module =>
       import module._
       val credentialStore = new CredentialStore {
-         /** As seen from anonymous class $anon, the missing signatures are as follows.  
-          *  *  For convenience, these are usable as stub implementations.  */   
-        def delete(x$1: String,x$2: com.google.api.client.auth.oauth2.Credential): Unit = ???  
-        def load(x$1: String,x$2: com.google.api.client.auth.oauth2.Credential): Boolean = true 
-        def store(x$1: String,x$2: com.google.api.client.auth.oauth2.Credential): Unit = ()
+        /**
+         * As seen from anonymous class $anon, the missing signatures are as follows.
+         *  *  For convenience, these are usable as stub implementations.
+         */
+        def delete(x$1: String, x$2: com.google.api.client.auth.oauth2.Credential): Unit = ???
+        def load(x$1: String, x$2: com.google.api.client.auth.oauth2.Credential): Boolean = true
+        def store(x$1: String, x$2: com.google.api.client.auth.oauth2.Credential): Unit = ()
       }
       bind[CredentialStore] toSingle credentialStore
     } ~ TestBindings.configuration

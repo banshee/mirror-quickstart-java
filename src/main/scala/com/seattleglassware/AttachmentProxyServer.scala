@@ -1,5 +1,8 @@
 package com.seattleglassware
 
+import javax.servlet.ServletRequest
+import javax.servlet.ServletResponse
+import javax.servlet.FilterChain
 import scala.util.control.Exception._
 import java.io.FileInputStream
 import java.util.Properties
@@ -27,16 +30,21 @@ import com.google.api.client.util.ByteStreams
 import java.io.{ InputStream, OutputStream }
 import javax.servlet.http.HttpServletResponse
 import com.seattleglassware.BindingIdentifiers._
+import javax.servlet.Filter
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
 case class NoSuchSessionAttribute(name: String) extends EarlyReturn
 case class WrappedFailure[T](x: T, extraInformation: Option[String] = None) extends EarlyReturn
 case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
+case class FailedCondition(explanation: String) extends EarlyReturn
+case class FinishedProcessing(explanation: String) extends EarlyReturn
 
 sealed abstract class Effect
 case class SetResponseContentType(value: String) extends Effect
 case class CopyStreamToOutput(fromStream: InputStream) extends Effect
+case class RedirectTo(u: GenericUrl) extends Effect
+case object YieldToNextFilter extends Effect
 
 object StateStuff {
   val stategen = StateGenerator[GlasswareState, EarlyReturn]
@@ -64,13 +72,13 @@ object StateStuff {
     get = gs => gs.req)
 }
 
-class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends HttpServlet with StatefulParameterOperations with Injectable {
+class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import StateStuff.stategen._
 
   def attachmentProxyAction: CombinedStateAndFailure[(String, String)] = for {
     attachmentId <- getParameter("attachment").liftState
     timelineItemId <- getParameter("timelineItem").liftState
-    userid <- getSessionAttribute[String]("userId").liftState
+    userid <- getUserId.liftState
 
     auth = AuthUtil()
     credential <- auth.getCredential(userid).liftState
@@ -84,14 +92,11 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
   } yield (attachmentId, timelineItemId)
 }
 
-import StateStuff._
+class AttachmentProxyServletShim(implicit val bindingModule: BindingModule) extends HttpServlet
 
-class AttachmentProxyServlet extends AttachmentProxyServletSupport()(ProjectConfiguration.configuration) {
-  override def doGet(req: HttpServletRequest, resp: HttpServletResponse) {
-    val (state, result) = attachmentProxyAction.run(GlasswareState(req))
-    val effects = effectsThroughGlasswareState.get(state)
-    executeEffects(effects, resp)
-  }
+class AttachmentProxyServlet extends AttachmentProxyServletShim()(ProjectConfiguration.configuration) with ServerPlumbing {
+  val support = new AttachmentProxyServletSupport
+  override def doGet(req: HttpServletRequest, resp: HttpServletResponse) = doServer(req, resp, support.attachmentProxyAction)
 }
 
 trait HttpRequestWrapper {
@@ -100,12 +105,15 @@ trait HttpRequestWrapper {
   def getParameter(s: String): Option[String]
   def getScheme: Option[String]
   def getSessionAttribute[T](s: String): EarlyReturn \/ T
-  def requestType: HttpRequestType = getScheme match {
+  def scheme: HttpRequestType = getScheme match {
     case Some("http")  => Http
     case Some("https") => Https
     case None          => Missing
     case _             => Other
   }
+  def getRequestURI: String
+  def getRequestGenericUrl: GenericUrl
+  def getHostname: String
 }
 
 object HttpRequestWrapper {
@@ -123,11 +131,15 @@ object HttpRequestWrapper {
   implicit class HttpServletRequestWrapper(r: HttpServletRequest) extends HttpRequestWrapper {
     def getParameter(s: String) = Option(r.getParameter(s))
     def getScheme = Option(r.getScheme()) map { _.toLowerCase }
+    def getServerName = Option(r.getServerName)
     def getSessionAttribute[T](s: String): EarlyReturn \/ T =
       safelyCall(r.getSession.getAttribute(s))(
         asInstanceOfNotNull[T](_).right,
         NoSuchSessionAttribute(s).left,
         WrappedFailure(_).left)
+    def getRequestURI = r.getRequestURI
+    def getRequestGenericUrl = new GenericUrl(getRequestURI)
+    def getHostname = getRequestGenericUrl.getHost
   }
 }
 
@@ -139,10 +151,10 @@ trait StatefulParameterOperations {
 
   def getParameter(parameterName: String) =
     State[GlasswareState, EarlyReturn \/ String] {
-      case s =>
+      state =>
         val result =
-          requestThroughGlasswareState.get(s).getParameter(parameterName).fold(NoSuchParameter(parameterName).left[String])(_.right)
-        (s, result)
+          requestThroughGlasswareState.get(state).getParameter(parameterName).fold(NoSuchParameter(parameterName).left[String])(_.right)
+        (state, result)
     }
 
   def pushEffect(e: Effect) =
@@ -152,12 +164,16 @@ trait StatefulParameterOperations {
         (newstate, ())
     }
 
+  import StateStuff._
+
+  def getUserId = getSessionAttribute[String]("userId")
+
   def getSessionAttribute[T](attributeName: String) =
     State[GlasswareState, EarlyReturn \/ T] {
-      case s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
+      s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
     }
 
-  def executeEffects(effects: List[Effect], resp: HttpServletResponse) = effects foreach executeEffect(resp)
+  def executeEffects(effects: List[Effect], resp: HttpServletResponse) = effects.reverse foreach executeEffect(resp)
 
   def executeEffect(resp: HttpServletResponse)(e: Effect) = e match {
     case SetResponseContentType(s) => resp.setContentType(s)
@@ -279,5 +295,110 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
   val urlFetchTransport = inject[UrlFetchTransport]
   val jacksonFactory = inject[JacksonFactory]
   val applicationName = inject[String](ApplicationName)
+}
+
+trait ServerPlumbing extends StatefulParameterOperations {
+  import StateStuff._
+  import StateStuff.stategen.CombinedStateAndFailure
+
+  def doServer[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
+    val (state, result) = s.run(GlasswareState(req))
+    val effects = effectsThroughGlasswareState.get(state)
+    executeEffects(effects, resp)
+  }
+
+  def doFilter[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit =
+    (req, resp) match {
+      case (req: HttpServletRequest, resp: HttpServletResponse) => doHttpFilter(req, resp, chain, s)
+      case _ => ()
+    }
+
+  def doHttpFilter[T](req: HttpServletRequest, resp: HttpServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
+    val (state, result) = s.run(GlasswareState(req))
+    val effects = effectsThroughGlasswareState.get(state)
+    executeEffects(effects, resp)
+  }
+}
+
+class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+  import bindingModule._
+  import HttpRequestWrapper._
+
+  import StateStuff.stategen._
+
+  def appspotHttpsCheck = ifAll(
+    predicates = List(hostnameMatches(_.contains("appspot.com")), urlSchemeIs(Http)),
+    trueEffects = redirectToHttps,
+    trueResult = FinishedProcessing("running on appspot requires https").left,
+    falseResult = ().right)
+
+  def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "Skipping auth check during auth flow")
+  def isRobot = yieldToNextFilterIfFirstElementOfPathMatches("notify", "Skipping auth check for notify servlet")
+
+  def yieldToNextFilterIfFirstElementOfPathMatches(p: String, explanation: String) =
+    yieldToNextFilterIfPathMatches({ case h :: t => p == h }, explanation)
+
+  def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = ifAll(
+    predicates = List(urlPathMatches(fn)),
+    trueEffects = _ => List(YieldToNextFilter),
+    trueResult = FinishedProcessing(explanation).left,
+    falseResult = ().right)
+
+  //
+  //          LOG.fine("Checking to see if anyone is logged in");
+  //      if (AuthUtil.getUserId(httpRequest) == null
+  //          || AuthUtil.getCredential(AuthUtil.getUserId(httpRequest)) == null
+  //          || AuthUtil.getCredential(AuthUtil.getUserId(httpRequest)).getAccessToken() == null) {
+  //        // redirect to auth flow
+  //        httpResponse.sendRedirect(WebUtil.buildUrl(httpRequest, "/oauth2callback"));
+  //        return;
+  //      }
+  //
+
+  def redirectToHttps(req: HttpRequestWrapper) = List(RedirectTo(req.getRequestGenericUrl.newScheme("https")))
+
+  def authFilterAction: CombinedStateAndFailure[String] = for {
+    _ <- appspotHttpsCheck.liftState
+    _ <- middleOfAuthFlowCheck.liftState
+    _ <- isRobot.liftState
+  } yield "foo"
+
+  def ifAll[T, U](predicates: Seq[Function[HttpRequestWrapper, Boolean]], trueEffects: HttpRequestWrapper => List[Effect], trueResult: T \/ U, falseResult: T \/ U) =
+    State[GlasswareState, T \/ U] {
+      case state @ GlasswareState(req, effects) =>
+        val alltrue = predicates.forall { _(req) }
+        if (alltrue) (GlasswareState(req, trueEffects(req).reverse ++ effects), trueResult) else (state, falseResult)
+    }
+
+  implicit class GenericUrlWithNewScheme(u: GenericUrl) {
+    def newScheme(scheme: String) = {
+      val result = u.clone
+      result.setScheme(scheme)
+      result
+    }
+  }
+
+  import scala.collection.JavaConverters._
+
+  def urlSchemeIs(scheme: HttpRequestWrapper.HttpRequestType)(req: HttpRequestWrapper) =
+    req.scheme == scheme
+
+  def hostnameMatches(fn: String => Boolean)(req: HttpRequestWrapper) =
+    fn(req.getHostname)
+
+  def urlPathMatches(fn: PartialFunction[List[String], Boolean])(req: HttpRequestWrapper) =
+    fn(req.getRequestGenericUrl.getPathParts.asScala.toList)
+
+  def parameterMatches(parameterName: String, fn: String => Boolean)(req: HttpRequestWrapper) =
+    req.getRequestGenericUrl.getAll(parameterName).asScala.map(_.toString).find(fn).isDefined
 
 }
+
+abstract class AuthFilterShim(implicit val bindingModule: BindingModule) extends Filter
+class AuthFilter extends AuthFilterShim()(ProjectConfiguration.configuration) with ServerPlumbing with Injectable {
+  val support = new AuthFilterSupport
+  override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) = doFilter(req, resp, chain, support.authFilterAction)
+  def destroy(): Unit = ??? 
+  def init(x$1: javax.servlet.FilterConfig): Unit = ???
+}
+
