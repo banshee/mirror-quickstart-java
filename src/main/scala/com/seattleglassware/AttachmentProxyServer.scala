@@ -1,13 +1,14 @@
 package com.seattleglassware
 
-import javax.servlet.ServletRequest
-import javax.servlet.ServletResponse
-import javax.servlet.FilterChain
-import scala.util.control.Exception._
 import java.io.FileInputStream
+import java.io.InputStream
 import java.util.Properties
+
 import scala.collection.JavaConversions.seqAsJavaList
-import com.escalatesoft.subcut.inject.BindingId
+import scala.collection.JavaConverters.asScalaBufferConverter
+import scala.collection.JavaConverters.collectionAsScalaIterableConverter
+import scala.util.control.Exception.ultimately
+
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
 import com.escalatesoft.subcut.inject.bindingIdToString
@@ -18,19 +19,31 @@ import com.google.api.client.extensions.appengine.http.UrlFetchTransport
 import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
 import com.google.api.client.http.GenericUrl
 import com.google.api.client.json.jackson.JacksonFactory
+import com.google.api.client.util.ByteStreams
 import com.google.api.services.mirror.Mirror
+import com.seattleglassware.BindingIdentifiers.ApplicationName
+import com.seattleglassware.BindingIdentifiers.OAuthPropertiesFileLocation
+
 import JavaInterop.asInstanceOfNotNull
 import JavaInterop.safelyCall
+import javax.servlet.Filter
+import javax.servlet.FilterChain
+import javax.servlet.ServletRequest
+import javax.servlet.ServletResponse
 import javax.servlet.http.HttpServlet
 import javax.servlet.http.HttpServletRequest
-import scalaz._
-import scalaz.Scalaz._
-import StateStuff._
-import com.google.api.client.util.ByteStreams
-import java.io.{ InputStream, OutputStream }
 import javax.servlet.http.HttpServletResponse
-import com.seattleglassware.BindingIdentifiers._
-import javax.servlet.Filter
+//import scalaz._
+import scalaz.Lens
+import scalaz.Monoid
+import scalaz.EitherT
+import scalaz.Applicative
+import scalaz.MonadTrans
+import scalaz.Scalaz._
+import scalaz.State
+import scalaz.{\/ => \/}
+
+import com.seattleglassware.StateStuff._
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
