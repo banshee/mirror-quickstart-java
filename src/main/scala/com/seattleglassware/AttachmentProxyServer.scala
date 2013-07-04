@@ -40,8 +40,7 @@ import scalaz.Applicative
 import scalaz.MonadTrans
 import scalaz.Scalaz._
 import scalaz.State
-import scalaz.{\/ => \/}
-
+import scalaz.\/
 
 import com.seattleglassware.StateStuff._
 
