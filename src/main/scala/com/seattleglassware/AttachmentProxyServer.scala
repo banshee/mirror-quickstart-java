@@ -33,7 +33,6 @@ import javax.servlet.ServletResponse
 import javax.servlet.http.HttpServlet
 import javax.servlet.http.HttpServletRequest
 import javax.servlet.http.HttpServletResponse
-//import scalaz._
 import scalaz.Lens
 import scalaz.Monoid
 import scalaz.EitherT
@@ -42,6 +41,7 @@ import scalaz.MonadTrans
 import scalaz.Scalaz._
 import scalaz.State
 import scalaz.{\/ => \/}
+
 
 import com.seattleglassware.StateStuff._
 
