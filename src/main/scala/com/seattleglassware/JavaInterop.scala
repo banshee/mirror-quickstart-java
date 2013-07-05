@@ -4,7 +4,6 @@ import scalaz._
 import Scalaz._
 
 object JavaInterop {
-  private def identical[T](x: T): T = x
   def safelyCall[T, U](x: => U)(returnedValid: U => T, returnedNull: => T, threwException: Throwable => T): T =
     try {
       x match {
