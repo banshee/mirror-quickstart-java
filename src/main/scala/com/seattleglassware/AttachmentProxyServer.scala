@@ -195,14 +195,17 @@ trait StatefulParameterOperations {
       s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
     }
 
-  def executeEffects(effects: List[Effect], resp: HttpServletResponse) = effects.reverse foreach executeEffect(resp)
+  def executeEffects(effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain]) = effects.reverse foreach executeEffect(req, resp, chain)
 
-  def executeEffect(resp: HttpServletResponse)(e: Effect) = e match {
+  def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain])(e: Effect) = e match {
     case SetResponseContentType(s) => resp.setContentType(s)
     case CopyStreamToOutput(stream) =>
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
+    case PlaceholderEffect => () 
+    case RedirectTo(url) => resp.sendRedirect(url.toString)
+    case YieldToNextFilter => chain.get.doFilter(req, resp)
   }
 }
 
@@ -326,7 +329,7 @@ trait ServerPlumbing extends StatefulParameterOperations {
   def doServer[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)
-    executeEffects(effects, resp)
+    executeEffects(effects, req, resp, None)
   }
 
   def doFilter[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit =
@@ -338,7 +341,7 @@ trait ServerPlumbing extends StatefulParameterOperations {
   def doHttpFilter[T](req: HttpServletRequest, resp: HttpServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)
-    executeEffects(effects, resp)
+    executeEffects(effects, req, resp, chain.some)
   }
 }
 
@@ -355,7 +358,7 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     falseResult = ().right)
 
   def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "Skipping auth check during auth flow")
-  def isRobot = yieldToNextFilterIfFirstElementOfPathMatches("notify", "Skipping auth check for notify servlet")
+  def isRobotCheck = yieldToNextFilterIfFirstElementOfPathMatches("notify", "Skipping auth check for notify servlet")
 
   def yieldToNextFilterIfFirstElementOfPathMatches(p: String, explanation: String) =
     yieldToNextFilterIfPathMatches({ case h :: t => p == h }, explanation)
@@ -396,9 +399,6 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   type =?>[A, B] = PartialFunction[A, B]
   type PF[A, B] = PartialFunction[A, B]
 
-  val convertErrorToRedirect: PF[EarlyReturn, FinishedProcessing] = { case x => FinishedProcessing(x.toString) }
-  val passthrough: EarlyReturn =?> EarlyReturn = { case x => x }
-
   def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = ifAll(
     predicates = List(urlPathMatches(fn)),
     trueEffects = _ => List(YieldToNextFilter),
@@ -421,18 +421,18 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   def authenticationCheck: CombinedStateAndFailure[String] = for {
     _ <- appspotHttpsCheck.liftState
     _ <- middleOfAuthFlowCheck.liftState
-    _ <- isRobot.liftState
+    _ <- isRobotCheck.liftState
     token <- getAccessToken.liftState
   } yield token
 
-  def authFilterSteps(state: GlasswareState) = {
-    val (GlasswareState(req, effects), resultStatus) = authenticationCheck.run(state)
-    resultStatus match {
-      case -\/(NoAuthenticationToken(e)) =>
-        (req, RedirectTo(req.getRequestGenericUrl.newRawPath("/oauth2callback")) :: effects)
-      case _ => (req, effects)
-    }
-  }
+//  def authFilterSteps(state: GlasswareState) = {
+//    val (GlasswareState(req, effects), resultStatus) = authenticationCheck.run(state)
+//    resultStatus match {
+//      case -\/(NoAuthenticationToken(e)) =>
+//        (req, RedirectTo(req.getRequestGenericUrl.newRawPath("/oauth2callback")) :: effects)
+//      case _ => (req, effects)
+//    }
+//  }
 
   def ifAll[T, U](predicates: Seq[Function[HttpRequestWrapper, Boolean]], trueEffects: HttpRequestWrapper => List[Effect], trueResult: T \/ U, falseResult: T \/ U) =
     State[GlasswareState, T \/ U] {
@@ -475,7 +475,7 @@ class AuthFilter extends AuthFilterShim()(ProjectConfiguration.configuration) wi
   val support = new AuthFilterSupport
   override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) = 
     doFilter(req, resp, chain, support.authenticationCheck)
-  def destroy(): Unit = ???
-  def init(x$1: javax.servlet.FilterConfig): Unit = ???
+  override def destroy(): Unit = ()
+  override def init(x$1: javax.servlet.FilterConfig): Unit = ()
 }
 
