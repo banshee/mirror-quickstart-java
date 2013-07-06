@@ -8,7 +8,5 @@
 	<classpathentry kind="con" path="org.scala-ide.sdt.launching.SCALA_CONTAINER"/>
 	<classpathentry exported="true" kind="con" path="org.eclipse.jdt.launching.JRE_CONTAINER"/>
 	<classpathentry kind="con" path="org.apache.ivyde.eclipse.cpcontainer.IVYDE_CONTAINER/?project=mirror-quickstart-java&amp;ivyXmlPath=pom.xml&amp;confs=*"/>
-	<classpathentry kind="lib" path="libs/scalamock-core_2.10-3.0.1.jar"/>
-	<classpathentry kind="lib" path="libs/scalamock-scalatest-support_2.10-3.0.1.jar"/>
 	<classpathentry kind="output" path="web/WEB-INF/classes"/>
 </classpath>

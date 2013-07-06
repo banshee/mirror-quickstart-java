@@ -23,10 +23,13 @@ import com.google.api.client.auth.oauth2.CredentialStore
 import com.seattleglassware.StateStuff._
 import com.google.api.client.auth.oauth2.Credential
 import com.google.api.client.auth.oauth2.Credential.AccessMethod
-import org.scalamock.scalatest.MockFactory
+import javax.servlet.http.HttpServletRequest
+import org.scalatest.mock.MockitoSugar
+import com.google.api.client.http.GenericUrl
+import scala.PartialFunction._
 
 @RunWith(classOf[JUnitRunner])
-class ServerTests extends FunSuite with ShouldMatchers {
+class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
   test("safelyCall can handle null") {
     val result = safelyCall(returnsNull)(
       returnedValid = identity,
@@ -91,27 +94,44 @@ class ServerTests extends FunSuite with ShouldMatchers {
 }
 
 @RunWith(classOf[JUnitRunner])
-class AuthUtilTests extends FunSuite with ShouldMatchers {
+class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
   test("can create an AuthUtil instance") {
     implicit val bindingmodule = TestBindings.configuration
     val a = new AuthUtil()
     val cf = a.newAuthorizationCodeFlow
-    cf should be('right)
+  }
+  
+  test("urlPathMatch should match") {
+    implicit val bindingmodule = TestBindings.configuration
+    val a = new AuthFilterSupport()
+    val r = new TestHttpRequestWrapper("http://example.com/oauth2callback")
+    val result = a.urlPathMatches {case "oauth2callback" :: Nil => true}(r)
+    result should be (true)
+  }
+  
+  test("AuthFilter should redirect to https if the hostname is appspot") {
+    implicit val bindingmodule = TestBindings.configuration
+    val a = new AuthFilterSupport()
+    val r = new TestHttpRequestWrapper("http://example.com/oauth2callback")
+    val (GlasswareState(_, effects), result) = a.authenticationCheck.run(new GlasswareState(r))
+    val check = condOpt(effects) {
+      case YieldToNextFilter :: RedirectTo(_, _) :: Nil => 1
+    }
+    println(s"effectser are $effects")
+    effects should be ('asdf)
+    check should be (Some(1))
   }
 }
 
-@RunWith(classOf[JUnitRunner])
-class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
-  object EmptyHttpRequestWrapper extends HttpRequestWrapper {
+  class TestHttpRequestWrapper(url: String = "http://example.com/") extends HttpRequestWrapper {
     val items = Map("attachment" -> "atch", "timelineItem" -> "tli", "user_id" -> "one")
     def getParameter(s: String) = items.get(s)
-    def getScheme = "http".some
     def getSessionAttribute[T](s: String): EarlyReturn \/ T = NoSuchParameter(s).left
-    def getHostname: String = ???
-    def getRequestGenericUrl: com.google.api.client.http.GenericUrl = ???
-    def getRequestURI: String = ???
+    def getRequestURI: String = url
   }
 
+@RunWith(classOf[JUnitRunner])
+class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
   test("can run AttachmentProxyServlet") {
     implicit val testSpecificWithAuthorizedUser = newBindingModule { module =>
       import module._
@@ -128,7 +148,7 @@ class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
     } ~ TestBindings.configuration
 
     val a = new AttachmentProxyServletSupport()
-    val b = a.attachmentProxyAction.run(GlasswareState(EmptyHttpRequestWrapper))
+    val b = a.attachmentProxyAction.run(GlasswareState(new TestHttpRequestWrapper))
     println("asdfff" + b.toString)
   }
 }

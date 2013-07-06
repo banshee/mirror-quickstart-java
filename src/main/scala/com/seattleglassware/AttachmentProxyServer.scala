@@ -58,9 +58,10 @@ case class NoAuthenticationToken(reason: EarlyReturn) extends EarlyReturn
 sealed abstract class Effect
 case class SetResponseContentType(value: String) extends Effect
 case class CopyStreamToOutput(fromStream: InputStream) extends Effect
-case class RedirectTo(u: GenericUrl) extends Effect
+case class RedirectTo(u: GenericUrl, explanation: String) extends Effect
 case object YieldToNextFilter extends Effect
 case object PlaceholderEffect extends Effect
+case class Comment(s: String) extends Effect
 
 sealed abstract class GlasswareStates
 case object NotAuthenticated extends GlasswareStates
@@ -125,7 +126,7 @@ trait HttpRequestWrapper {
   import HttpRequestWrapper._
 
   def getParameter(s: String): Option[String]
-  def getScheme: Option[String]
+  def getScheme = Option(getRequestGenericUrl.getScheme) map (_.toLowerCase)
   def getSessionAttribute[T](s: String): EarlyReturn \/ T
   def scheme: HttpRequestType = getScheme match {
     case Some("http")  => Http
@@ -134,8 +135,8 @@ trait HttpRequestWrapper {
     case _             => Other
   }
   def getRequestURI: String
-  def getRequestGenericUrl: GenericUrl
-  def getHostname: String
+  def getRequestGenericUrl: GenericUrl = new GenericUrl(getRequestURI)
+  def getHostname = Option(getRequestGenericUrl.getHost) | ""
 }
 
 object HttpRequestWrapper {
@@ -152,16 +153,12 @@ object HttpRequestWrapper {
 
   implicit class HttpServletRequestWrapper(r: HttpServletRequest) extends HttpRequestWrapper {
     def getParameter(s: String) = Option(r.getParameter(s))
-    def getScheme = Option(r.getScheme()) map { _.toLowerCase }
-    def getServerName = Option(r.getServerName)
     def getSessionAttribute[T](s: String): EarlyReturn \/ T =
       safelyCall(r.getSession.getAttribute(s))(
         asInstanceOfNotNull[T](_).right,
         NoSuchSessionAttribute(s).left,
         WrappedFailure(_).left)
-    def getRequestURI = r.getRequestURI
-    def getRequestGenericUrl = new GenericUrl(getRequestURI)
-    def getHostname = getRequestGenericUrl.getHost
+    def getRequestURI = r.getRequestURL.toString
   }
 }
 
@@ -195,7 +192,11 @@ trait StatefulParameterOperations {
       s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
     }
 
-  def executeEffects(effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain]) = effects.reverse foreach executeEffect(req, resp, chain)
+  def executeEffects(effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain]) = {
+    val requrl = req.getRequestURL().toString
+    println(s"doeffects: $requrl $effects")
+    effects.reverse foreach executeEffect(req, resp, chain)
+  }
 
   def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain])(e: Effect) = e match {
     case SetResponseContentType(s) => resp.setContentType(s)
@@ -203,9 +204,9 @@ trait StatefulParameterOperations {
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
-    case PlaceholderEffect => () 
-    case RedirectTo(url) => resp.sendRedirect(url.toString)
-    case YieldToNextFilter => chain.get.doFilter(req, resp)
+    case RedirectTo(url, _) => resp.sendRedirect(url.toString)
+    case YieldToNextFilter  => chain.get.doFilter(req, resp)
+    case Comment(_) | PlaceholderEffect => ()
   }
 }
 
@@ -339,8 +340,7 @@ trait ServerPlumbing extends StatefulParameterOperations {
     }
 
   def doHttpFilter[T](req: HttpServletRequest, resp: HttpServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
-    val (state, result) = s.run(GlasswareState(req))
-    val effects = effectsThroughGlasswareState.get(state)
+    val (GlasswareState(_, effects), result) = s.run(GlasswareState(req))
     executeEffects(effects, req, resp, chain.some)
   }
 }
@@ -361,21 +361,11 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   def isRobotCheck = yieldToNextFilterIfFirstElementOfPathMatches("notify", "Skipping auth check for notify servlet")
 
   def yieldToNextFilterIfFirstElementOfPathMatches(p: String, explanation: String) =
-    yieldToNextFilterIfPathMatches({ case h :: t => p == h }, explanation)
+    yieldToNextFilterIfPathMatches({
+      case h :: t => p == h 
+      }, explanation)
 
   val auth = AuthUtil()
-
-  //  def getAccessToken: EitherT[StateWithFixedStateType, EarlyReturn, String] = {
-  //    val result = for {
-  //      userId <- getUserId.liftState
-  //      credential <- auth.getCredential(userId).liftState
-  //      accessToken <- safelyCall(credential.getAccessToken)(
-  //        returnedValid = _.right[EarlyReturn],
-  //        returnedNull = FailedCondition("no access token").left,
-  //        threwException = t => WrappedFailure(t).left).liftState
-  //    } yield accessToken
-  //    result.leftMap(NoAuthenticationToken(_))
-  //  }
 
   def getAccessToken = State[GlasswareState, EarlyReturn \/ String] { startingstate =>
     val result = for {
@@ -390,7 +380,7 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     returnvalue match {
       case x @ -\/(_) =>
         val url = newstate.req.getRequestGenericUrl.newRawPath("/oauth2callback")
-        (effectsThroughGlasswareState.mod(RedirectTo(url) :: _, newstate), x)
+        (effectsThroughGlasswareState.mod(RedirectTo(url, s"getAccessToken resulted in $returnvalue") :: _, newstate), x)
       case _ =>
         (newstate, returnvalue)
     }
@@ -416,23 +406,16 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   //      }
   //
 
-  def redirectToHttps(req: HttpRequestWrapper) = List(RedirectTo(req.getRequestGenericUrl.newScheme("https")))
+  def redirectToHttps(req: HttpRequestWrapper) = List(RedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
 
   def authenticationCheck: CombinedStateAndFailure[String] = for {
     _ <- appspotHttpsCheck.liftState
     _ <- middleOfAuthFlowCheck.liftState
     _ <- isRobotCheck.liftState
     token <- getAccessToken.liftState
+    _ <- pushEffect(Comment("finished authentication check")).liftState
+    _ <- pushEffect(YieldToNextFilter).liftState
   } yield token
-
-//  def authFilterSteps(state: GlasswareState) = {
-//    val (GlasswareState(req, effects), resultStatus) = authenticationCheck.run(state)
-//    resultStatus match {
-//      case -\/(NoAuthenticationToken(e)) =>
-//        (req, RedirectTo(req.getRequestGenericUrl.newRawPath("/oauth2callback")) :: effects)
-//      case _ => (req, effects)
-//    }
-//  }
 
   def ifAll[T, U](predicates: Seq[Function[HttpRequestWrapper, Boolean]], trueEffects: HttpRequestWrapper => List[Effect], trueResult: T \/ U, falseResult: T \/ U) =
     State[GlasswareState, T \/ U] {
@@ -462,18 +445,19 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   def hostnameMatches(fn: String => Boolean)(req: HttpRequestWrapper) =
     fn(req.getHostname)
 
-  def urlPathMatches(fn: PartialFunction[List[String], Boolean])(req: HttpRequestWrapper) =
-    fn(req.getRequestGenericUrl.getPathParts.asScala.toList)
+  def urlPathMatches(fn: PartialFunction[List[String], Boolean])(req: HttpRequestWrapper) = {
+    val items = req.getRequestGenericUrl.getPathParts.asScala.filter {s => s != null && s.length > 0 }.toList
+    fn.lift(items) | false
+  }
 
   def parameterMatches(parameterName: String, fn: String => Boolean)(req: HttpRequestWrapper) =
     req.getRequestGenericUrl.getAll(parameterName).asScala.map(_.toString).find(fn).isDefined
-
 }
 
 abstract class AuthFilterShim(implicit val bindingModule: BindingModule) extends Filter
 class AuthFilter extends AuthFilterShim()(ProjectConfiguration.configuration) with ServerPlumbing with Injectable {
   val support = new AuthFilterSupport
-  override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) = 
+  override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
     doFilter(req, resp, chain, support.authenticationCheck)
   override def destroy(): Unit = ()
   override def init(x$1: javax.servlet.FilterConfig): Unit = ()
