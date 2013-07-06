@@ -112,14 +112,8 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
 
     _ <- pushEffect(SetResponseContentType(contentType)).liftState
     _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
+    
   } yield (attachmentId, timelineItemId)
-}
-
-class AttachmentProxyServletShim(implicit val bindingModule: BindingModule) extends HttpServlet
-
-class AttachmentProxyServlet extends AttachmentProxyServletShim()(ProjectConfiguration.configuration) with ServerPlumbing {
-  val support = new AttachmentProxyServletSupport
-  override def doGet(req: HttpServletRequest, resp: HttpServletResponse) = doServerPlubming(req, resp, support.attachmentProxyAction)
 }
 
 trait HttpRequestWrapper {
@@ -396,17 +390,6 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
     trueResult = FinishedProcessing(explanation).left,
     falseResult = ().right)
 
-  //
-  //          LOG.fine("Checking to see if anyone is logged in");
-  //      if (AuthUtil.getUserId(httpRequest) == null
-  //          || AuthUtil.getCredential(AuthUtil.getUserId(httpRequest)) == null
-  //          || AuthUtil.getCredential(AuthUtil.getUserId(httpRequest)).getAccessToken() == null) {
-  //        // redirect to auth flow
-  //        httpResponse.sendRedirect(WebUtil.buildUrl(httpRequest, "/oauth2callback"));
-  //        return;
-  //      }
-  //
-
   def redirectToHttps(req: HttpRequestWrapper) = List(RedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
 
   def authenticationCheck: CombinedStateAndFailure[String] = for {
@@ -415,8 +398,8 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
     _ <- middleOfAuthFlowCheck.liftState
     _ <- isRobotCheck.liftState
     token <- getAccessToken.liftState
-    _ <- pushComment("finish authentication check").liftState
     _ <- pushEffect(YieldToNextFilter).liftState
+    _ <- pushComment("finish authentication check").liftState
   } yield token
 
   def ifAll[T, U](predicates: Seq[Function[HttpRequestWrapper, Boolean]], trueEffects: HttpRequestWrapper => List[Effect], trueResult: T \/ U, falseResult: T \/ U) =
@@ -468,12 +451,20 @@ trait FilterScaffold[T] { self: ServerPlumbing with Filter =>
     doFilterPlumbing(req, resp, chain, filterImplementation)
 }
 
+trait ServletScaffold[T] extends HttpServlet { self: ServerPlumbing =>
+  import StateStuff.stategen._
+  val servletImplementation: CombinedStateAndFailure[T]
+  override def doGet(req: HttpServletRequest, resp: HttpServletResponse) =
+    doServerPlubming(req, resp, servletImplementation)
+}
+
 abstract class FilterInjectionShim[T](implicit val bindingModule: BindingModule) extends Filter with ServerPlumbing with FilterScaffold[String]
+abstract class ServletInjectionShim[T](implicit val bindingModule: BindingModule) extends HttpServlet with ServerPlumbing with ServletScaffold[T]
 
 class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
   val filterImplementation = (new AuthFilterImplementation).authenticationCheck
 }
 
-// XxFilterShim exists so we can pass a binding module
-// XxFilter is the class in web.xml
-// XxImplementation is the class containing the actual code
+class AttachmentProxyServlet extends ServletInjectionShim[(String, String)]()(ProjectConfiguration.configuration) {
+  val servletImplementation = (new AttachmentProxyServletSupport).attachmentProxyAction
+}
