@@ -119,7 +119,7 @@ class AttachmentProxyServletShim(implicit val bindingModule: BindingModule) exte
 
 class AttachmentProxyServlet extends AttachmentProxyServletShim()(ProjectConfiguration.configuration) with ServerPlumbing {
   val support = new AttachmentProxyServletSupport
-  override def doGet(req: HttpServletRequest, resp: HttpServletResponse) = doServer(req, resp, support.attachmentProxyAction)
+  override def doGet(req: HttpServletRequest, resp: HttpServletResponse) = doServerPlubming(req, resp, support.attachmentProxyAction)
 }
 
 trait HttpRequestWrapper {
@@ -183,6 +183,8 @@ trait StatefulParameterOperations {
         (newstate, newstate.effects)
     }
 
+  def pushComment(s: String) = pushEffect(Comment(s))
+
   import StateStuff._
 
   def getUserId = getSessionAttribute[String]("userId")
@@ -198,15 +200,15 @@ trait StatefulParameterOperations {
     effects.reverse foreach executeEffect(req, resp, chain)
   }
 
-  def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain])(e: Effect) = e match {
+  def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain] = None)(e: Effect) = e match {
     case SetResponseContentType(s) => resp.setContentType(s)
     case CopyStreamToOutput(stream) =>
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
-    case RedirectTo(url, _) => resp.sendRedirect(url.toString)
-    case YieldToNextFilter  => chain.get.doFilter(req, resp)
-    case Comment(_) | PlaceholderEffect => ()
+    case RedirectTo(url, _)             => resp.sendRedirect(url.toString)
+    case YieldToNextFilter              => chain.get.doFilter(req, resp)
+    case Comment(_) | PlaceholderEffect => // Do nothing
   }
 }
 
@@ -324,28 +326,27 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
 }
 
 trait ServerPlumbing extends StatefulParameterOperations {
-  import StateStuff._
   import StateStuff.stategen.CombinedStateAndFailure
 
-  def doServer[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
+  def doServerPlubming[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)
     executeEffects(effects, req, resp, None)
   }
 
-  def doFilter[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit =
+  def doFilterPlumbing[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit =
     (req, resp) match {
       case (req: HttpServletRequest, resp: HttpServletResponse) => doHttpFilter(req, resp, chain, s)
       case _ => ()
     }
 
-  def doHttpFilter[T](req: HttpServletRequest, resp: HttpServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
+  private[this] def doHttpFilter[T](req: HttpServletRequest, resp: HttpServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
     val (GlasswareState(_, effects), result) = s.run(GlasswareState(req))
     executeEffects(effects, req, resp, chain.some)
   }
 }
 
-class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+class AuthFilterImplementation(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import bindingModule._
   import HttpRequestWrapper._
 
@@ -362,8 +363,8 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
 
   def yieldToNextFilterIfFirstElementOfPathMatches(p: String, explanation: String) =
     yieldToNextFilterIfPathMatches({
-      case h :: t => p == h 
-      }, explanation)
+      case h :: t => p == h
+    }, explanation)
 
   val auth = AuthUtil()
 
@@ -409,11 +410,12 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   def redirectToHttps(req: HttpRequestWrapper) = List(RedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
 
   def authenticationCheck: CombinedStateAndFailure[String] = for {
+    _ <- pushComment("start authentication check").liftState
     _ <- appspotHttpsCheck.liftState
     _ <- middleOfAuthFlowCheck.liftState
     _ <- isRobotCheck.liftState
     token <- getAccessToken.liftState
-    _ <- pushEffect(Comment("finished authentication check")).liftState
+    _ <- pushComment("finish authentication check").liftState
     _ <- pushEffect(YieldToNextFilter).liftState
   } yield token
 
@@ -446,7 +448,7 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     fn(req.getHostname)
 
   def urlPathMatches(fn: PartialFunction[List[String], Boolean])(req: HttpRequestWrapper) = {
-    val items = req.getRequestGenericUrl.getPathParts.asScala.filter {s => s != null && s.length > 0 }.toList
+    val items = req.getRequestGenericUrl.getPathParts.asScala.filter { s => s != null && s.length > 0 }.toList
     fn.lift(items) | false
   }
 
@@ -454,12 +456,24 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     req.getRequestGenericUrl.getAll(parameterName).asScala.map(_.toString).find(fn).isDefined
 }
 
-abstract class AuthFilterShim(implicit val bindingModule: BindingModule) extends Filter
-class AuthFilter extends AuthFilterShim()(ProjectConfiguration.configuration) with ServerPlumbing with Injectable {
-  val support = new AuthFilterSupport
-  override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
-    doFilter(req, resp, chain, support.authenticationCheck)
+trait NonInitializedFilter extends Filter {
   override def destroy(): Unit = ()
-  override def init(x$1: javax.servlet.FilterConfig): Unit = ()
+  override def init(x: javax.servlet.FilterConfig): Unit = ()
 }
 
+trait FilterScaffold[T] { self: ServerPlumbing with Filter =>
+  import StateStuff.stategen._
+  val filterImplementation: CombinedStateAndFailure[T]
+  override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
+    doFilterPlumbing(req, resp, chain, filterImplementation)
+}
+
+abstract class FilterInjectionShim[T](implicit val bindingModule: BindingModule) extends Filter with ServerPlumbing with FilterScaffold[String]
+
+class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
+  val filterImplementation = (new AuthFilterImplementation).authenticationCheck
+}
+
+// XxFilterShim exists so we can pass a binding module
+// XxFilter is the class in web.xml
+// XxImplementation is the class containing the actual code
