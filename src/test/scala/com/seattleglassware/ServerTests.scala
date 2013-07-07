@@ -20,7 +20,7 @@ import com.google.api.client.extensions.appengine.http.UrlFetchTransport
 import com.google.api.client.json.jackson.JacksonFactory
 import com.google.api.client.auth.oauth2.MemoryCredentialStore
 import com.google.api.client.auth.oauth2.CredentialStore
-import com.seattleglassware.StateStuff._
+import com.seattleglassware.EitherTWithState._
 import com.google.api.client.auth.oauth2.Credential
 import com.google.api.client.auth.oauth2.Credential.AccessMethod
 import javax.servlet.http.HttpServletRequest

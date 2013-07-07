@@ -45,7 +45,7 @@ import scalaz.\/
 import scalaz.-\/
 import scalaz.\/-
 
-import com.seattleglassware.StateStuff._
+import com.seattleglassware.EitherTWithState._
 
 sealed abstract class EarlyReturn
 case class NoSuchParameter(name: String) extends EarlyReturn
@@ -72,7 +72,7 @@ object Misc {
   type =?>[A, B] = PartialFunction[A, B]
 }
 
-object StateStuff {
+object EitherTWithState {
   case class StateGenerator[StateType, FailureType] {
     type StateWithFixedStateType[+A] = State[StateType, A]
     type EitherTWithFailureType[F[+_], A] = EitherT[F, FailureType, A]
@@ -129,7 +129,7 @@ object StateStuff {
 }
 
 class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import StateStuff.stategen._
+  import EitherTWithState.stategen._
 
   val ax = AuthUtil()
   def deleteme = ax.getCredential("userId")
@@ -216,7 +216,7 @@ trait StatefulParameterOperations {
 
   def pushComment(s: String) = pushEffect(Comment(s))
 
-  import StateStuff._
+  import EitherTWithState._
 
   def getUserId = getSessionAttribute[String]("userId")
 
@@ -266,7 +266,7 @@ trait StatefulParameterOperations {
 
 case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectable {
   import bindingModule._
-  import StateStuff._
+  import EitherTWithState._
 
   val GLASS_SCOPE = "https://www.googleapis.com/auth/glass.timeline " +
     "https://www.googleapis.com/auth/glass.location " +
@@ -349,7 +349,7 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
 }
 
 trait ServerPlumbing extends StatefulParameterOperations {
-  import StateStuff.stategen.CombinedStateAndFailure
+  import EitherTWithState.stategen.CombinedStateAndFailure
 
   def doServerPlubming[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
@@ -373,7 +373,7 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
   import bindingModule._
   import HttpRequestWrapper._
 
-  import StateStuff.stategen._
+  import EitherTWithState.stategen._
 
   implicit class GenericUrlWithNewScheme(u: GenericUrl) {
     def newScheme(scheme: String) = {
@@ -473,14 +473,14 @@ trait NonInitializedFilter extends Filter {
 }
 
 trait FilterScaffold[T] { self: ServerPlumbing with Filter =>
-  import StateStuff.stategen._
+  import EitherTWithState.stategen._
   val filterImplementation: CombinedStateAndFailure[T]
   override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
     doFilterPlumbing(req, resp, chain, filterImplementation)
 }
 
 trait ServletScaffold[T] extends HttpServlet { self: ServerPlumbing =>
-  import StateStuff.stategen._
+  import EitherTWithState.stategen._
   val servletImplementation: CombinedStateAndFailure[T]
   override def doGet(req: HttpServletRequest, resp: HttpServletResponse) =
     doServerPlubming(req, resp, servletImplementation)
