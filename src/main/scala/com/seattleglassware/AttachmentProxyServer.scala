@@ -8,6 +8,7 @@ import scala.collection.JavaConversions.seqAsJavaList
 import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.collection.JavaConverters.collectionAsScalaIterableConverter
 import scala.util.control.Exception.ultimately
+import scala.PartialFunction._
 
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
@@ -54,7 +55,7 @@ case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
 case class FailedCondition(explanation: String) extends EarlyReturn
 case class FinishedProcessing(explanation: String) extends EarlyReturn
 case class NoAuthenticationToken(reason: EarlyReturn) extends EarlyReturn
-case object ExecuteRedirect extends EarlyReturn
+case class ExecuteRedirect(reason: EarlyReturn) extends EarlyReturn
 
 sealed abstract class Effect
 case class SetResponseContentType(value: String) extends Effect
@@ -66,6 +67,11 @@ case class Comment(s: String) extends Effect
 
 sealed abstract class GlasswareStates
 case object NotAuthenticated extends GlasswareStates
+
+object Misc {
+  type =?>[A, B] = PartialFunction[A, B]
+  type PF[A, B] = PartialFunction[A, B]
+}
 
 object StateStuff {
   val stategen = StateGenerator[GlasswareState, EarlyReturn]
@@ -83,9 +89,10 @@ object StateStuff {
       (a, b) match {
         case (NoOp, b) => b
         case (a, NoOp) => a
-        case _         => throw new RuntimeException("this isnt really a Monoid")
+        case _         => throw new RuntimeException("""this isnt really a Monoid, I just want to use it on the left side of a \/""")
       }
   }
+  
   case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
   val effectsThroughGlasswareState = Lens.lensg[GlasswareState, List[Effect]](set = gs => effects => gs.copy(effects = effects),
     get = gs => gs.effects)
@@ -158,6 +165,7 @@ object HttpRequestWrapper {
 }
 
 trait StatefulParameterOperations {
+  import Misc._
   import HttpRequestWrapper._
 
   def wrapException[T](t: Throwable) = WrappedFailure(t).left[T]
@@ -189,10 +197,30 @@ trait StatefulParameterOperations {
       s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
     }
 
+  val isRedirectLocation: Effect =?> GenericUrl = {
+    case SetRedirectTo(x, _) => x
+  }
+
   def executeEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn]) = {
     val requrl = req.getRequestURL().toString
-    println(s"early: $earlyReturn doeffects: $requrl $effects")
-    effects.reverse foreach executeEffect(req, resp, chain, earlyReturn)
+    val (specialeffects, normaleffects) = effects.partition(isRedirectLocation.isDefinedAt(_))
+    println(s"Run request =====\nearlyReturn: $earlyReturn\ndoeffects:\n$requrl\n$normaleffects\n$specialeffects\n========")
+    normaleffects.reverse foreach executeEffect(req, resp, chain, earlyReturn)
+    executeSpecialEffects(specialeffects, req, resp, chain, earlyReturn)
+  }
+
+  def executeSpecialEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn]) = {
+    // If we get a ExecuteRedirect as the early return, 
+    // use the most recent redirect location as the address
+    earlyReturn collectFirst {
+      case ExecuteRedirect(_) =>
+        val url = effects collectFirst isRedirectLocation
+        url foreach {
+          x =>
+            println("Redirecting to $x")
+            resp.sendRedirect(x.toString)
+        }
+    }
   }
 
   def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn])(e: Effect) = (earlyReturn, e) match {
@@ -201,10 +229,10 @@ trait StatefulParameterOperations {
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
-    case (Some(ExecuteRedirect), SetRedirectTo(url, _)) => resp.sendRedirect(url.toString)
-    case (_, SetRedirectTo(url, _))                     => ()
-    case (_, YieldToNextFilter)                         => chain.get.doFilter(req, resp)
-    case (_, Comment(_)) | (_, PlaceholderEffect)       => // Do nothing
+    case (Some(ExecuteRedirect(_)), SetRedirectTo(url, _)) => resp.sendRedirect(url.toString)
+    case (_, SetRedirectTo(url, _))                        => ()
+    case (_, YieldToNextFilter)                            => chain.get.doFilter(req, resp)
+    case (_, Comment(_)) | (_, PlaceholderEffect)          => // Do nothing
   }
 }
 
@@ -377,7 +405,7 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
 
   val auth = AuthUtil()
 
-  def redirect(path: String, reason: String) = for {
+  def setRedirectLocation(path: String, reason: String) = for {
     GlasswareState(req, _) <- get[GlasswareState].liftState
     url = req.getRequestGenericUrl.newRawPath(path)
     _ <- pushEffect(SetRedirectTo(url, reason)).liftState
@@ -385,7 +413,7 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
 
   def getAccessToken = {
     val computation = for {
-      _ <- redirect("/oauth2callback", "failed to get auth token")
+      redirectlocation <- setRedirectLocation("/oauth2callback", "failed to get auth token")
       userId <- getUserId.liftState
       credential <- auth.getCredential(userId).liftState
       accessToken <- safelyCall(credential.getAccessToken)(
@@ -393,11 +421,10 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
         returnedNull = FailedCondition("no access token").left,
         threwException = t => WrappedFailure(t).left).liftState
     } yield accessToken
-    computation.fold(left => ExecuteRedirect.left[String], right => right.right[EarlyReturn])
+    // Turn all failures into an ExecuteRedirect
+    computation.fold(left => ExecuteRedirect(reason = left).left[String],
+      right => right.right[EarlyReturn])
   }
-
-  type =?>[A, B] = PartialFunction[A, B]
-  type PF[A, B] = PartialFunction[A, B]
 
   def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = ifAll(
     predicates = List(urlPathMatches(fn)),
