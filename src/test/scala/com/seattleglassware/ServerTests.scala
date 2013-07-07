@@ -74,18 +74,6 @@ class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
     ("just a string").wrapped should be("just a string")
   }
 
-  test("lenses") {
-    case class Fnord(x: Foo)
-    case class Foo(y: String)
-    val f = Lens.lensg[Fnord, Foo](set = fn => str => Fnord(str), get = fn => fn.x)
-    val u = Lens.lensg[Foo, String](set = fn => str => Foo(str), get = fn => fn.y)
-    val v = f >=> u
-    val fn = Fnord(Foo("a"))
-    val r = v.get(fn)
-    var r1 = v.set(fn, "flurb")
-    r1 should be(Fnord(Foo("flurb")))
-  }
-
   def returnsNull: String = null
   def returnsString: String = "str"
   def throwsSomething: String = throw new RuntimeException("bang")
@@ -112,13 +100,12 @@ class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
   test("AuthFilter should redirect to https if the hostname is appspot") {
     implicit val bindingmodule = TestBindings.configuration
     val a = new AuthFilterImplementation()
-    val r = new TestHttpRequestWrapper("http://example.com/oauth2callback")
+    val r = new TestHttpRequestWrapper("http://example.com/fnord")
     val (GlasswareState(_, effects), result) = a.authenticationCheck.run(new GlasswareState(r))
+    result should be (ExecuteRedirect.left)
     val check = condOpt(effects) {
-      case YieldToNextFilter :: RedirectTo(_, _) :: Nil => 1
+      case SetRedirectTo(_, _) :: t => 1
     }
-    println(s"effectser are $effects")
-    effects should be ('asdf)
     check should be (Some(1))
   }
 }

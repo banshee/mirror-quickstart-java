@@ -54,11 +54,12 @@ case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
 case class FailedCondition(explanation: String) extends EarlyReturn
 case class FinishedProcessing(explanation: String) extends EarlyReturn
 case class NoAuthenticationToken(reason: EarlyReturn) extends EarlyReturn
+case object ExecuteRedirect extends EarlyReturn
 
 sealed abstract class Effect
 case class SetResponseContentType(value: String) extends Effect
 case class CopyStreamToOutput(fromStream: InputStream) extends Effect
-case class RedirectTo(u: GenericUrl, explanation: String) extends Effect
+case class SetRedirectTo(u: GenericUrl, explanation: String) extends Effect
 case object YieldToNextFilter extends Effect
 case object PlaceholderEffect extends Effect
 case class Comment(s: String) extends Effect
@@ -112,7 +113,7 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
 
     _ <- pushEffect(SetResponseContentType(contentType)).liftState
     _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
-    
+
   } yield (attachmentId, timelineItemId)
 }
 
@@ -188,21 +189,22 @@ trait StatefulParameterOperations {
       s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
     }
 
-  def executeEffects(effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain]) = {
+  def executeEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn]) = {
     val requrl = req.getRequestURL().toString
-    println(s"doeffects: $requrl $effects")
-    effects.reverse foreach executeEffect(req, resp, chain)
+    println(s"early: $earlyReturn doeffects: $requrl $effects")
+    effects.reverse foreach executeEffect(req, resp, chain, earlyReturn)
   }
 
-  def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain] = None)(e: Effect) = e match {
-    case SetResponseContentType(s) => resp.setContentType(s)
-    case CopyStreamToOutput(stream) =>
+  def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn])(e: Effect) = (earlyReturn, e) match {
+    case (_, SetResponseContentType(s)) => resp.setContentType(s)
+    case (_, CopyStreamToOutput(stream)) =>
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
-    case RedirectTo(url, _)             => resp.sendRedirect(url.toString)
-    case YieldToNextFilter              => chain.get.doFilter(req, resp)
-    case Comment(_) | PlaceholderEffect => // Do nothing
+    case (Some(ExecuteRedirect), SetRedirectTo(url, _)) => resp.sendRedirect(url.toString)
+    case (_, SetRedirectTo(url, _))                     => ()
+    case (_, YieldToNextFilter)                         => chain.get.doFilter(req, resp)
+    case (_, Comment(_)) | (_, PlaceholderEffect)       => // Do nothing
   }
 }
 
@@ -325,7 +327,7 @@ trait ServerPlumbing extends StatefulParameterOperations {
   def doServerPlubming[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)
-    executeEffects(effects, req, resp, None)
+    executeEffects(effects, req, resp, None, result.swap.toOption)
   }
 
   def doFilterPlumbing[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit =
@@ -336,7 +338,7 @@ trait ServerPlumbing extends StatefulParameterOperations {
 
   private[this] def doHttpFilter[T](req: HttpServletRequest, resp: HttpServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
     val (GlasswareState(_, effects), result) = s.run(GlasswareState(req))
-    executeEffects(effects, req, resp, chain.some)
+    executeEffects(effects, req, resp, chain.some, result.swap.toOption)
   }
 }
 
@@ -346,10 +348,23 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
 
   import StateStuff.stategen._
 
+  implicit class GenericUrlWithNewScheme(u: GenericUrl) {
+    def newScheme(scheme: String) = {
+      val result = u.clone
+      result.setScheme(scheme)
+      result
+    }
+    def newRawPath(p: String) = {
+      val result = u.clone
+      result.setRawPath(p)
+      result
+    }
+  }
+
   def appspotHttpsCheck = ifAll(
     predicates = List(hostnameMatches(_.contains("appspot.com")), urlSchemeIs(Http)),
     trueEffects = redirectToHttps,
-    trueResult = FinishedProcessing("running on appspot requires https").left,
+    trueResult = ExecuteRedirect.left,
     falseResult = ().right)
 
   def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "Skipping auth check during auth flow")
@@ -362,8 +377,15 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
 
   val auth = AuthUtil()
 
-  def getAccessToken = State[GlasswareState, EarlyReturn \/ String] { startingstate =>
-    val result = for {
+  def redirect(path: String, reason: String) = for {
+    GlasswareState(req, _) <- get[GlasswareState].liftState
+    url = req.getRequestGenericUrl.newRawPath(path)
+    _ <- pushEffect(SetRedirectTo(url, reason)).liftState
+  } yield url
+
+  def getAccessToken = {
+    val computation = for {
+      _ <- redirect("/oauth2callback", "failed to get auth token")
       userId <- getUserId.liftState
       credential <- auth.getCredential(userId).liftState
       accessToken <- safelyCall(credential.getAccessToken)(
@@ -371,14 +393,7 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
         returnedNull = FailedCondition("no access token").left,
         threwException = t => WrappedFailure(t).left).liftState
     } yield accessToken
-    val (newstate, returnvalue) = result.run(startingstate)
-    returnvalue match {
-      case x @ -\/(_) =>
-        val url = newstate.req.getRequestGenericUrl.newRawPath("/oauth2callback")
-        (effectsThroughGlasswareState.mod(RedirectTo(url, s"getAccessToken resulted in $returnvalue") :: _, newstate), x)
-      case _ =>
-        (newstate, returnvalue)
-    }
+    computation.fold(left => ExecuteRedirect.left[String], right => right.right[EarlyReturn])
   }
 
   type =?>[A, B] = PartialFunction[A, B]
@@ -390,7 +405,7 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
     trueResult = FinishedProcessing(explanation).left,
     falseResult = ().right)
 
-  def redirectToHttps(req: HttpRequestWrapper) = List(RedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
+  def redirectToHttps(req: HttpRequestWrapper) = List(SetRedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
 
   def authenticationCheck: CombinedStateAndFailure[String] = for {
     _ <- pushComment("start authentication check").liftState
@@ -408,19 +423,6 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
         val alltrue = predicates.forall { _(req) }
         if (alltrue) (GlasswareState(req, trueEffects(req).reverse ++ effects), trueResult) else (state, falseResult)
     }
-
-  implicit class GenericUrlWithNewScheme(u: GenericUrl) {
-    def newScheme(scheme: String) = {
-      val result = u.clone
-      result.setScheme(scheme)
-      result
-    }
-    def newRawPath(p: String) = {
-      val result = u.clone
-      result.setRawPath(p)
-      result
-    }
-  }
 
   import scala.collection.JavaConverters._
 
