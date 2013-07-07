@@ -1,33 +1,29 @@
 package com.seattleglassware
 
-import org.scalatest.matchers.ShouldMatchers
-import org.scalatest.Spec
-import org.scalatest.FunSuite
-import scala.collection.mutable.Stack
-import com.google.common.collect._
-import com.google.common.collect.Ranges
+import scala.PartialFunction.cond
+import scala.util.control.Exception.catching
+
 import org.junit.runner.RunWith
 import org.scalatest.junit.JUnitRunner
-import scalaz._
-import Scalaz._
-import JavaInterop._
-import scala.util.control.Exception._
-import com.seattleglassware._
-import com.escalatesoft.subcut.inject._
-import com.escalatesoft.subcut.inject.NewBindingModule._
-import BindingIdentifiers._
-import com.google.api.client.extensions.appengine.http.UrlFetchTransport
-import com.google.api.client.json.jackson.JacksonFactory
-import com.google.api.client.auth.oauth2.MemoryCredentialStore
-import com.google.api.client.auth.oauth2.CredentialStore
-import com.seattleglassware.EitherTWithState._
+import org.scalatest.FunSuite
+import org.scalatest.matchers.ShouldMatchers
+import org.scalatest.mock.MockitoSugar
+
+import com.escalatesoft.subcut.inject.NewBindingModule.newBindingModule
+import com.escalatesoft.subcut.inject.bindingIdToString
 import com.google.api.client.auth.oauth2.Credential
 import com.google.api.client.auth.oauth2.Credential.AccessMethod
-import javax.servlet.http.HttpServletRequest
-import org.scalatest.mock.MockitoSugar
-import com.google.api.client.http.GenericUrl
-import scala.PartialFunction._
+import com.google.api.client.auth.oauth2.CredentialStore
+import com.google.api.client.auth.oauth2.MemoryCredentialStore
+
+import BindingIdentifiers.OAuthPropertiesFileLocation
 import GlasswareTypes._
+import JavaInterop.safelyCall
+import scalaz._
+import scalaz.{-\/ => -\/}
+import scalaz.Scalaz._
+import scalaz.State
+import scalaz.{\/ => \/}
 
 @RunWith(classOf[JUnitRunner])
 class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
