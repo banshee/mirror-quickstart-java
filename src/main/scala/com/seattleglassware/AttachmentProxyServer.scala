@@ -46,70 +46,31 @@ import scalaz.-\/
 import scalaz.\/-
 
 import com.seattleglassware.EitherTWithState._
+import GlasswareTypes._
 
-sealed abstract class EarlyReturn
-case class NoSuchParameter(name: String) extends EarlyReturn
-case class NoSuchSessionAttribute(name: String) extends EarlyReturn
-case class WrappedFailure[T](x: T, extraInformation: Option[String] = None) extends EarlyReturn
-case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
-case class FailedCondition(explanation: String) extends EarlyReturn
-case class FinishedProcessing(explanation: String) extends EarlyReturn
-case class NoAuthenticationToken(reason: EarlyReturn) extends EarlyReturn
-case class ExecuteRedirect(reason: EarlyReturn) extends EarlyReturn
-
-sealed abstract class Effect
-case class SetResponseContentType(value: String) extends Effect
-case class CopyStreamToOutput(fromStream: InputStream) extends Effect
-case class SetRedirectTo(u: GenericUrl, explanation: String) extends Effect
-case object YieldToNextFilter extends Effect
-case object PlaceholderEffect extends Effect
-case class Comment(s: String) extends Effect
-
-sealed abstract class GlasswareStates
-case object NotAuthenticated extends GlasswareStates
-
-object Misc {
-  type =?>[A, B] = PartialFunction[A, B]
-}
-
-object EitherTWithState {
-  case class StateGenerator[StateType, FailureType] {
-    type StateWithFixedStateType[+A] = State[StateType, A]
-    type EitherTWithFailureType[F[+_], A] = EitherT[F, FailureType, A]
-    type CombinedStateAndFailure[A] = EitherTWithFailureType[StateWithFixedStateType, A]
-
-    def liftStateA[A](s: StateWithFixedStateType[FailureType \/ A]): CombinedStateAndFailure[A] = EitherT(s)
-
-    implicit class HasLiftFromStateWithFixedStateType[A](s: StateWithFixedStateType[FailureType \/ A]) {
-      def liftState: CombinedStateAndFailure[A] = EitherT(s)
-    }
-
-    implicit class HasLiftFromEitherOfFailureTypeOrA[A](s: FailureType \/ A) {
-      def liftState: CombinedStateAndFailure[A] = EitherT(Applicative[StateWithFixedStateType].point(s))
-    }
-
-    implicit class HasLiftFromAnswerType[A](s: A) {
-      def liftState: CombinedStateAndFailure[A] = (s.right[FailureType]).liftState
-    }
-
-    implicit class HasLiftFromFailureType[A](s: FailureType) {
-      def liftState: CombinedStateAndFailure[A] = (s.left[A]).liftState
-    }
-
-    implicit class HasLiftFromStateWithoutFailure[A](s: State[StateType, A]) {
-      def liftState: CombinedStateAndFailure[A] = sublift(s)
-      private[this] def sublift[A](st: StateWithFixedStateType[A]): CombinedStateAndFailure[A] = MonadTrans[EitherTWithFailureType].liftM(st)
-    }
-  }
-
+object GlasswareTypes {
   val stateTypes = StateGenerator[GlasswareState, EarlyReturn]
   
-  implicit class CatchExceptionsWrapper[T](t: => T) {
-    def catchExceptions(extra: => String = "(no additional information)") = safelyCall(t)(
-      x => x.right,
-      WrappedNull(extra.some).left,
-      t => WrappedFailure(t, extra.some).left)
-  }
+  sealed abstract class EarlyReturn
+  case class NoSuchParameter(name: String) extends EarlyReturn
+  case class NoSuchSessionAttribute(name: String) extends EarlyReturn
+  case class WrappedFailure[T](x: T, extraInformation: Option[String] = None) extends EarlyReturn
+  case class WrappedNull(extraInformation: Option[String]) extends EarlyReturn
+  case class FailedCondition(explanation: String) extends EarlyReturn
+  case class FinishedProcessing(explanation: String) extends EarlyReturn
+  case class NoAuthenticationToken(reason: EarlyReturn) extends EarlyReturn
+  case class ExecuteRedirect(reason: EarlyReturn) extends EarlyReturn
+
+  sealed abstract class Effect
+  case class SetResponseContentType(value: String) extends Effect
+  case class CopyStreamToOutput(fromStream: InputStream) extends Effect
+  case class SetRedirectTo(u: GenericUrl, explanation: String) extends Effect
+  case object YieldToNextFilter extends Effect
+  case object PlaceholderEffect extends Effect
+  case class Comment(s: String) extends Effect
+
+  sealed abstract class GlasswareStates
+  case object NotAuthenticated extends GlasswareStates
 
   implicit val partialMonoidForEarlyReturn = new Monoid[EarlyReturn] {
     case object NoOp extends EarlyReturn
@@ -122,16 +83,39 @@ object EitherTWithState {
       }
   }
 
+  implicit class CatchExceptionsWrapper[T](t: => T) {
+    def catchExceptions(extra: => String = "(no additional information)") = safelyCall(t)(
+      x => x.right,
+      WrappedNull(extra.some).left,
+      t => WrappedFailure(t, extra.some).left)
+  }
+
   case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
   val effectsThroughGlasswareState = Lens.lensg[GlasswareState, List[Effect]](set = gs => effects => gs.copy(effects = effects),
     get = gs => gs.effects)
   val requestThroughGlasswareState = Lens.lensg[GlasswareState, HttpRequestWrapper](set = gs => req => gs.copy(req = req),
     get = gs => gs.req)
+
+}
+
+object Misc {
+  type =?>[A, B] = PartialFunction[A, B]
+
+  implicit val partialMonoidForEarlyReturn = new Monoid[EarlyReturn] {
+    case object NoOp extends EarlyReturn
+    def zero = NoOp
+    def append(a: EarlyReturn, b: => EarlyReturn) =
+      (a, b) match {
+        case (NoOp, b) => b
+        case (a, NoOp) => a
+        case _         => throw new RuntimeException("""this isnt really a Monoid, I just want to use it on the left side of a \/""")
+      }
+  }
 }
 
 class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import EitherTWithState.stateTypes._
-
+  import stateTypes._
+  
   val ax = AuthUtil()
   def deleteme = ax.getCredential("userId")
 
@@ -350,8 +334,8 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
 }
 
 trait ServerPlumbing extends StatefulParameterOperations {
-  import EitherTWithState.stateTypes.CombinedStateAndFailure
-
+  import stateTypes._
+  
   def doServerPlubming[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)
@@ -371,10 +355,10 @@ trait ServerPlumbing extends StatefulParameterOperations {
 }
 
 class AuthFilterImplementation(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+  import stateTypes._
+  
   import bindingModule._
   import HttpRequestWrapper._
-
-  import EitherTWithState.stateTypes._
 
   implicit class GenericUrlWithNewScheme(u: GenericUrl) {
     def newScheme(scheme: String) = {
@@ -474,14 +458,16 @@ trait NonInitializedFilter extends Filter {
 }
 
 trait FilterScaffold[T] { self: ServerPlumbing with Filter =>
-  import EitherTWithState.stateTypes._
+  import stateTypes._
+  
   val filterImplementation: CombinedStateAndFailure[T]
   override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
     doFilterPlumbing(req, resp, chain, filterImplementation)
 }
 
 trait ServletScaffold[T] extends HttpServlet { self: ServerPlumbing =>
-  import EitherTWithState.stateTypes._
+  import stateTypes._
+  
   val servletImplementation: CombinedStateAndFailure[T]
   override def doGet(req: HttpServletRequest, resp: HttpServletResponse) =
     doServerPlubming(req, resp, servletImplementation)

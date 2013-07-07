@@ -27,6 +27,7 @@ import javax.servlet.http.HttpServletRequest
 import org.scalatest.mock.MockitoSugar
 import com.google.api.client.http.GenericUrl
 import scala.PartialFunction._
+import GlasswareTypes._
 
 @RunWith(classOf[JUnitRunner])
 class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
@@ -88,15 +89,15 @@ class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
     val a = new AuthUtil()
     val cf = a.newAuthorizationCodeFlow
   }
-  
+
   test("urlPathMatch should match") {
     implicit val bindingmodule = TestBindings.configuration
     val a = new AuthFilterImplementation()
     val r = new TestHttpRequestWrapper("http://example.com/oauth2callback")
-    val result = a.urlPathMatches {case "oauth2callback" :: Nil => true}(r)
-    result should be (true)
+    val result = a.urlPathMatches { case "oauth2callback" :: Nil => true }(r)
+    result should be(true)
   }
-  
+
   test("AuthFilter should redirect to https if the hostname is appspot") {
     implicit val bindingmodule = TestBindings.configuration
     val a = new AuthFilterImplementation()
@@ -111,12 +112,14 @@ class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
   }
 }
 
-  class TestHttpRequestWrapper(url: String = "http://example.com/") extends HttpRequestWrapper {
-    val items = Map("attachment" -> "atch", "timelineItem" -> "tli", "user_id" -> "one")
-    def getParameter(s: String) = items.get(s)
-    def getSessionAttribute[T](s: String): EarlyReturn \/ T = NoSuchParameter(s).left
-    def getRequestURI: String = url
-  }
+class TestHttpRequestWrapper(url: String = "http://example.com/") extends HttpRequestWrapper {
+  import stateTypes._
+
+  val items = Map("attachment" -> "atch", "timelineItem" -> "tli", "user_id" -> "one")
+  def getParameter(s: String) = items.get(s)
+  def getSessionAttribute[T](s: String): EarlyReturn \/ T = NoSuchParameter(s).left
+  def getRequestURI: String = url
+}
 
 @RunWith(classOf[JUnitRunner])
 class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
