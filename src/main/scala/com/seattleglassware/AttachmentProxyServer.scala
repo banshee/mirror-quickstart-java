@@ -102,7 +102,8 @@ object EitherTWithState {
     }
   }
 
-  val stategen = StateGenerator[GlasswareState, EarlyReturn]
+  val stateTypes = StateGenerator[GlasswareState, EarlyReturn]
+  
   implicit class CatchExceptionsWrapper[T](t: => T) {
     def catchExceptions(extra: => String = "(no additional information)") = safelyCall(t)(
       x => x.right,
@@ -129,7 +130,7 @@ object EitherTWithState {
 }
 
 class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import EitherTWithState.stategen._
+  import EitherTWithState.stateTypes._
 
   val ax = AuthUtil()
   def deleteme = ax.getCredential("userId")
@@ -349,7 +350,7 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
 }
 
 trait ServerPlumbing extends StatefulParameterOperations {
-  import EitherTWithState.stategen.CombinedStateAndFailure
+  import EitherTWithState.stateTypes.CombinedStateAndFailure
 
   def doServerPlubming[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
@@ -373,7 +374,7 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
   import bindingModule._
   import HttpRequestWrapper._
 
-  import EitherTWithState.stategen._
+  import EitherTWithState.stateTypes._
 
   implicit class GenericUrlWithNewScheme(u: GenericUrl) {
     def newScheme(scheme: String) = {
@@ -473,14 +474,14 @@ trait NonInitializedFilter extends Filter {
 }
 
 trait FilterScaffold[T] { self: ServerPlumbing with Filter =>
-  import EitherTWithState.stategen._
+  import EitherTWithState.stateTypes._
   val filterImplementation: CombinedStateAndFailure[T]
   override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
     doFilterPlumbing(req, resp, chain, filterImplementation)
 }
 
 trait ServletScaffold[T] extends HttpServlet { self: ServerPlumbing =>
-  import EitherTWithState.stategen._
+  import EitherTWithState.stateTypes._
   val servletImplementation: CombinedStateAndFailure[T]
   override def doGet(req: HttpServletRequest, resp: HttpServletResponse) =
     doServerPlubming(req, resp, servletImplementation)
