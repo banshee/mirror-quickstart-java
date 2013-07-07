@@ -70,10 +70,38 @@ case object NotAuthenticated extends GlasswareStates
 
 object Misc {
   type =?>[A, B] = PartialFunction[A, B]
-  type PF[A, B] = PartialFunction[A, B]
 }
 
 object StateStuff {
+  case class StateGenerator[StateType, FailureType] {
+    type StateWithFixedStateType[+A] = State[StateType, A]
+    type EitherTWithFailureType[F[+_], A] = EitherT[F, FailureType, A]
+    type CombinedStateAndFailure[A] = EitherTWithFailureType[StateWithFixedStateType, A]
+
+    def liftStateA[A](s: StateWithFixedStateType[FailureType \/ A]): CombinedStateAndFailure[A] = EitherT(s)
+
+    implicit class HasLiftFromStateWithFixedStateType[A](s: StateWithFixedStateType[FailureType \/ A]) {
+      def liftState: CombinedStateAndFailure[A] = EitherT(s)
+    }
+
+    implicit class HasLiftFromEitherOfFailureTypeOrA[A](s: FailureType \/ A) {
+      def liftState: CombinedStateAndFailure[A] = EitherT(Applicative[StateWithFixedStateType].point(s))
+    }
+
+    implicit class HasLiftFromAnswerType[A](s: A) {
+      def liftState: CombinedStateAndFailure[A] = (s.right[FailureType]).liftState
+    }
+
+    implicit class HasLiftFromFailureType[A](s: FailureType) {
+      def liftState: CombinedStateAndFailure[A] = (s.left[A]).liftState
+    }
+
+    implicit class HasLiftFromStateWithoutFailure[A](s: State[StateType, A]) {
+      def liftState: CombinedStateAndFailure[A] = sublift(s)
+      private[this] def sublift[A](st: StateWithFixedStateType[A]): CombinedStateAndFailure[A] = MonadTrans[EitherTWithFailureType].liftM(st)
+    }
+  }
+
   val stategen = StateGenerator[GlasswareState, EarlyReturn]
   implicit class CatchExceptionsWrapper[T](t: => T) {
     def catchExceptions(extra: => String = "(no additional information)") = safelyCall(t)(
@@ -92,7 +120,7 @@ object StateStuff {
         case _         => throw new RuntimeException("""this isnt really a Monoid, I just want to use it on the left side of a \/""")
       }
   }
-  
+
   case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
   val effectsThroughGlasswareState = Lens.lensg[GlasswareState, List[Effect]](set = gs => effects => gs.copy(effects = effects),
     get = gs => gs.effects)
@@ -233,35 +261,6 @@ trait StatefulParameterOperations {
     case (_, SetRedirectTo(url, _))                        => ()
     case (_, YieldToNextFilter)                            => chain.get.doFilter(req, resp)
     case (_, Comment(_)) | (_, PlaceholderEffect)          => // Do nothing
-  }
-}
-
-case class StateGenerator[StateType, FailureType] {
-  type StateWithFixedStateType[+A] = State[StateType, A]
-  type EitherTWithFailureType[F[+_], A] = EitherT[F, FailureType, A]
-  type CombinedStateAndFailure[A] = EitherTWithFailureType[StateWithFixedStateType, A]
-
-  def liftStateA[A](s: StateWithFixedStateType[FailureType \/ A]): CombinedStateAndFailure[A] = EitherT(s)
-
-  implicit class HasLiftFromStateWithFixedStateType[A](s: StateWithFixedStateType[FailureType \/ A]) {
-    def liftState: CombinedStateAndFailure[A] = EitherT(s)
-  }
-
-  implicit class HasLiftFromEitherOfFailureTypeOrA[A](s: FailureType \/ A) {
-    def liftState: CombinedStateAndFailure[A] = EitherT(Applicative[StateWithFixedStateType].point(s))
-  }
-
-  implicit class HasLiftFromAnswerType[A](s: A) {
-    def liftState: CombinedStateAndFailure[A] = (s.right[FailureType]).liftState
-  }
-
-  implicit class HasLiftFromFailureType[A](s: FailureType) {
-    def liftState: CombinedStateAndFailure[A] = (s.left[A]).liftState
-  }
-
-  implicit class HasLiftFromStateWithoutFailure[A](s: State[StateType, A]) {
-    def liftState: CombinedStateAndFailure[A] = sublift(s)
-    private[this] def sublift[A](st: StateWithFixedStateType[A]): CombinedStateAndFailure[A] = MonadTrans[EitherTWithFailureType].liftM(st)
   }
 }
 
