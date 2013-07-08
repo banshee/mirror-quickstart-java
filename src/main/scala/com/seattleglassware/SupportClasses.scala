@@ -102,3 +102,28 @@ object HttpRequestWrapper {
     def getRequestURI = r.getRequestURL.toString
   }
 }
+
+trait NonInitializedFilter extends Filter {
+  override def destroy(): Unit = ()
+  override def init(x: javax.servlet.FilterConfig): Unit = ()
+}
+
+trait FilterScaffold[T] { self: ServerPlumbing with Filter =>
+  import stateTypes._
+  
+  val filterImplementation: CombinedStateAndFailure[T]
+  override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
+    doFilterPlumbing(req, resp, chain, filterImplementation)
+}
+
+trait ServletScaffold[T] extends HttpServlet { self: ServerPlumbing =>
+  import stateTypes._
+  
+  val servletImplementation: CombinedStateAndFailure[T]
+  override def doGet(req: HttpServletRequest, resp: HttpServletResponse) =
+    doServerPlumbing(req, resp, servletImplementation)
+}
+
+abstract class FilterInjectionShim[T](implicit val bindingModule: BindingModule) extends Filter with ServerPlumbing with FilterScaffold[String]
+abstract class ServletInjectionShim[T](implicit val bindingModule: BindingModule) extends HttpServlet with ServerPlumbing with ServletScaffold[T]
+
