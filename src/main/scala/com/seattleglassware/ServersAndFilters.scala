@@ -46,27 +46,6 @@ import scalaz.\/
 import com.seattleglassware.EitherTWithState._
 import GlasswareTypes._
 
-class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import stateTypes._
-  
-  def attachmentProxyAction: CombinedStateAndFailure[(String, String)] = for {
-    attachmentId <- getParameter("attachment").liftState
-    timelineItemId <- getParameter("timelineItem").liftState
-    userid <- getUserId.liftState
-
-    auth = AuthUtil()
-    credential <- auth.getCredential(userid).liftState
-
-    mc = new MirrorClient()
-    contentType <- mc.getAttachmentContentType(credential, timelineItemId, attachmentId).liftState
-    attachmentInputStream <- mc.getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
-
-    _ <- pushEffect(SetResponseContentType(contentType)).liftState
-    _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
-
-  } yield (attachmentId, timelineItemId)
-}
-
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import stateTypes._
   
@@ -155,8 +134,4 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
 
 class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
   val filterImplementation = (new AuthFilterSupport).authenticationCheck
-}
-
-class AttachmentProxyServlet extends ServletInjectionShim[(String, String)]()(ProjectConfiguration.configuration) {
-  val servletImplementation = (new AttachmentProxyServletSupport).attachmentProxyAction
 }
