@@ -48,6 +48,19 @@ import GlasswareTypes._
 
 object Misc {
   type =?>[A, B] = PartialFunction[A, B]
+ 
+  implicit class GenericUrlWithNewScheme(u: GenericUrl) {
+    def newScheme(scheme: String) = {
+      val result = u.clone
+      result.setScheme(scheme)
+      result
+    }
+    def newRawPath(p: String) = {
+      val result = u.clone
+      result.setRawPath(p)
+      result
+    }
+  }
 }
 
 trait HttpRequestWrapper {

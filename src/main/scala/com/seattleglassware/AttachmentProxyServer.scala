@@ -42,8 +42,6 @@ import scalaz.MonadTrans
 import scalaz.Scalaz._
 import scalaz.State
 import scalaz.\/
-import scalaz.-\/
-import scalaz.\/-
 
 import com.seattleglassware.EitherTWithState._
 import GlasswareTypes._
@@ -69,9 +67,6 @@ object GlasswareTypes {
   case object PlaceholderEffect extends Effect
   case class Comment(s: String) extends Effect
 
-  sealed abstract class GlasswareStates
-  case object NotAuthenticated extends GlasswareStates
-
   implicit val partialMonoidForEarlyReturn = new Monoid[EarlyReturn] {
     case object NoOp extends EarlyReturn
     def zero = NoOp
@@ -90,95 +85,16 @@ object GlasswareTypes {
       t => WrappedFailure(t, extra.some).left)
   }
 
-  case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
+  sealed case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
+  
   val effectsThroughGlasswareState = Lens.lensg[GlasswareState, List[Effect]](set = gs => effects => gs.copy(effects = effects),
     get = gs => gs.effects)
   val requestThroughGlasswareState = Lens.lensg[GlasswareState, HttpRequestWrapper](set = gs => req => gs.copy(req = req),
     get = gs => gs.req)
-
-}
-
-object Misc {
-  type =?>[A, B] = PartialFunction[A, B]
-
-  implicit val partialMonoidForEarlyReturn = new Monoid[EarlyReturn] {
-    case object NoOp extends EarlyReturn
-    def zero = NoOp
-    def append(a: EarlyReturn, b: => EarlyReturn) =
-      (a, b) match {
-        case (NoOp, b) => b
-        case (a, NoOp) => a
-        case _         => throw new RuntimeException("""this isnt really a Monoid, I just want to use it on the left side of a \/""")
-      }
-  }
-}
-
-class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import stateTypes._
-  
-  val ax = AuthUtil()
-  def deleteme = ax.getCredential("userId")
-
-  def attachmentProxyAction: CombinedStateAndFailure[(String, String)] = for {
-    attachmentId <- getParameter("attachment").liftState
-    timelineItemId <- getParameter("timelineItem").liftState
-    userid <- getUserId.liftState
-
-    auth = AuthUtil()
-    credential <- auth.getCredential(userid).liftState
-
-    mc = new MirrorClient()
-    contentType <- mc.getAttachmentContentType(credential, timelineItemId, attachmentId).liftState
-    attachmentInputStream <- mc.getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
-
-    _ <- pushEffect(SetResponseContentType(contentType)).liftState
-    _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
-
-  } yield (attachmentId, timelineItemId)
-}
-
-trait HttpRequestWrapper {
-  import HttpRequestWrapper._
-
-  def getParameter(s: String): Option[String]
-  def getScheme = Option(getRequestGenericUrl.getScheme) map (_.toLowerCase)
-  def getSessionAttribute[T](s: String): EarlyReturn \/ T
-  def scheme: HttpRequestType = getScheme match {
-    case Some("http")  => Http
-    case Some("https") => Https
-    case None          => Missing
-    case _             => Other
-  }
-  def getRequestURI: String
-  def getRequestGenericUrl: GenericUrl = new GenericUrl(getRequestURI)
-  def getHostname = Option(getRequestGenericUrl.getHost) | ""
-}
-
-object HttpRequestWrapper {
-  sealed abstract class HttpRequestType
-  case object Http extends HttpRequestType
-  case object Https extends HttpRequestType
-  case object Missing extends HttpRequestType
-  case object Other extends HttpRequestType
-
-  //  abstract sealed class TypedOptionalSessionAttributeResult[T]
-  //  case class Success[T](x: T) extends TypedOptionalSessionAttributeResult[T]
-  //  case class MissingAttribute[T](attrName: String) extends TypedOptionalSessionAttributeResult[T]
-  //  case class IncorrectType[T](attrName: String, result: AnyRef) extends TypedOptionalSessionAttributeResult[T]
-
-  implicit class HttpServletRequestWrapper(r: HttpServletRequest) extends HttpRequestWrapper {
-    def getParameter(s: String) = Option(r.getParameter(s))
-    def getSessionAttribute[T](s: String): EarlyReturn \/ T =
-      safelyCall(r.getSession.getAttribute(s))(
-        asInstanceOfNotNull[T](_).right,
-        NoSuchSessionAttribute(s).left,
-        WrappedFailure(_).left)
-    def getRequestURI = r.getRequestURL.toString
-  }
 }
 
 trait StatefulParameterOperations {
-  import Misc._
+  import com.seattleglassware.Misc._
   import HttpRequestWrapper._
 
   def wrapException[T](t: Throwable) = WrappedFailure(t).left[T]
@@ -200,8 +116,6 @@ trait StatefulParameterOperations {
     }
 
   def pushComment(s: String) = pushEffect(Comment(s))
-
-  import EitherTWithState._
 
   def getUserId = getSessionAttribute[String]("userId")
 
@@ -336,7 +250,7 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
 trait ServerPlumbing extends StatefulParameterOperations {
   import stateTypes._
   
-  def doServerPlubming[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
+  def doServerPlumbing[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)
     executeEffects(effects, req, resp, None, result.swap.toOption)
@@ -359,19 +273,7 @@ class AuthFilterImplementation(implicit val bindingModule: BindingModule) extend
   
   import bindingModule._
   import HttpRequestWrapper._
-
-  implicit class GenericUrlWithNewScheme(u: GenericUrl) {
-    def newScheme(scheme: String) = {
-      val result = u.clone
-      result.setScheme(scheme)
-      result
-    }
-    def newRawPath(p: String) = {
-      val result = u.clone
-      result.setRawPath(p)
-      result
-    }
-  }
+  import com.seattleglassware.Misc._
 
   def appspotHttpsCheck = ifAll(
     predicates = List(hostnameMatches(_.contains("appspot.com")), urlSchemeIs(Http)),
@@ -470,7 +372,7 @@ trait ServletScaffold[T] extends HttpServlet { self: ServerPlumbing =>
   
   val servletImplementation: CombinedStateAndFailure[T]
   override def doGet(req: HttpServletRequest, resp: HttpServletResponse) =
-    doServerPlubming(req, resp, servletImplementation)
+    doServerPlumbing(req, resp, servletImplementation)
 }
 
 abstract class FilterInjectionShim[T](implicit val bindingModule: BindingModule) extends Filter with ServerPlumbing with FilterScaffold[String]
