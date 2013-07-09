@@ -49,6 +49,8 @@ import HttpRequestWrapper._
 import com.seattleglassware.Misc._
 import com.seattleglassware.GlasswareTypes._
 import com.google.api.client.auth.oauth2.CredentialStoreRefreshListener
+import com.google.api.services.mirror.model.Contact
+import com.google.api.services.mirror.model.Subscription
 
 object GlasswareTypes {
   val stateTypes = StateGenerator[GlasswareState, EarlyReturn]
@@ -137,7 +139,7 @@ trait StatefulParameterOperations {
       s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
     }
 
-    import HttpRequestWrapper._
+  import HttpRequestWrapper._
   import com.seattleglassware.Misc.GenericUrlWithNewScheme
   import com.seattleglassware.GlasswareTypes.stateTypes._
 
@@ -242,7 +244,7 @@ object SessionAttributes {
   val USERID = "userId"
 }
 
-class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable {
+class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable with StatefulParameterOperations {
   import bindingModule._
 
   def getAttachmentInputStream(credential: Credential, timelineItemId: String, attachmentId: String) = for {
@@ -273,6 +275,25 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
     (_, _, metadata) <- getAttachmentMetadata(credential, timelineItemId, attachmentId)
     contentType <- metadata.getContentType.catchExceptions("no content type")
   } yield contentType
+
+  def insertContact(credential: Credential, contact: Contact) = {
+    getMirror(credential).map {
+      _.contacts.insert(contact).execute
+    }
+  }
+
+  def insertSubscription(credential: Credential, callbackUrl: String, userId: String, collection: String) = for {
+    mirror <- getMirror(credential)
+    subscription <- (new Subscription)
+      .setCollection(collection)
+      .setCallbackUrl(callbackUrl)
+      .setUserToken(userId)
+      .catchExceptions("failed to build subscription")
+    insertedSubscription <- mirror.subscriptions
+      .insert(subscription)
+      .execute
+      .catchExceptions("failed to insert subscription.")
+  } yield subscription
 
   val urlFetchTransport = inject[UrlFetchTransport]
   val jacksonFactory = inject[JacksonFactory]

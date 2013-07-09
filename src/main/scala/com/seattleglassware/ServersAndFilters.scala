@@ -1,7 +1,6 @@
 package com.seattleglassware
 
-import scala.collection.JavaConverters.asScalaBufferConverter
-import scala.collection.JavaConverters.collectionAsScalaIterableConverter
+import scala.collection.JavaConverters._
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
 import com.seattleglassware.Misc.GenericUrlWithNewScheme
@@ -29,6 +28,11 @@ import com.seattleglassware.Misc._
 import com.seattleglassware.GlasswareTypes.stateTypes._
 import com.google.api.client.googleapis.auth.oauth2.GoogleTokenResponse
 import com.google.api.client.auth.oauth2.TokenResponse
+import com.google.glassware.NewUserBootstrapper
+import com.google.api.services.mirror.model.Contact
+import com.google.glassware.MainServlet
+import com.google.api.services.mirror.model.TimelineItem
+import com.google.api.services.mirror.model.NotificationConfig
 
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import com.seattleglassware.GlasswareTypes.stateTypes._
@@ -105,22 +109,63 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
     redirectUri <- getGenericUrl.liftState
     flow <- auth.newAuthorizationCodeFlow.liftState
     url <- getGenericUrl.map(_.newRawPath("/oauth2callback").toString)
+
     tokenResponse <- flow.newTokenRequest(code)
       .setRedirectUri(url)
       .execute
       .catchExceptions("newtokenrequest failed")
       .liftState
+
     userId <- tokenResponse.asInstanceOf[GoogleTokenResponse]
       .parseIdToken
       .getPayload
       .getUserId
       .catchExceptions("extracting userid from google token response failed")
       .liftState
+
     _ <- pushComment("Code exchange worked. User " + userId + " logged in.")
       .liftState
+
     _ <- auth.setUserId(userId).liftState
+
     _ = flow.createAndStoreCredential(tokenResponse, userId)
+
+    GlasswareState(req, _) <- get[GlasswareState].liftState
+
+    _ <- bootstrapNewUser(userId)
   } yield 1
+
+  def bootstrapNewUser(userId: String) = for {
+    _ <- pushComment("bootstrapping new user").liftState
+    auth <- (new AuthUtil).liftState
+    flow <- auth.newAuthorizationCodeFlow.liftState
+    credential <- flow.loadCredential(userId).liftState
+
+    catUrl <- getGenericUrl
+    imageUrls = List(catUrl.newRawPath("/static/images/chipotle-tube-640x360.jpg"))
+
+    starterProjectContact <- (new Contact)
+      .setId(MainServlet.CONTACT_NAME)
+      .setDisplayName(MainServlet.CONTACT_NAME)
+      .setImageUrls(imageUrls.map(_.toString).asJava)
+      .catchExceptions("failed to create new contact")
+      .liftState
+
+    mc <- (new MirrorClient).liftState
+    insertedContact <- mc.insertContact(credential, starterProjectContact).liftState
+    subscription <- mc.insertSubscription(
+      credential,
+      catUrl.newRawPath("/notify").toString,
+      userId,
+      "timeline")
+      .catchExceptions("Failed to create timeline subscription. Might be running on localhost")
+      .liftState
+
+    timelineItem <- (new TimelineItem)
+      .setText("Welcome to the Glass Java Quick Start")
+      .setNotification(new NotificationConfig().setLevel("DEFAULT"))
+      .liftState
+  } yield subscription
 
   def startOAuth2Dance = for {
     _ <- pushComment("starting OAuth2 dance").liftState

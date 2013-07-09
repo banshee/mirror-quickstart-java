@@ -20,10 +20,10 @@ import BindingIdentifiers.OAuthPropertiesFileLocation
 import GlasswareTypes._
 import JavaInterop.safelyCall
 import scalaz._
-import scalaz.{-\/ => -\/}
+import scalaz.{ -\/ => -\/ }
 import scalaz.Scalaz._
 import scalaz.State
-import scalaz.{\/ => \/}
+import scalaz.{ \/ => \/ }
 
 @RunWith(classOf[JUnitRunner])
 class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
@@ -107,12 +107,29 @@ class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
   }
 }
 
+@RunWith(classOf[JUnitRunner])
+class AuthServletSupportTest extends FunSuite with ShouldMatchers with MockitoSugar {
+  test("can finish oauth2 dance") {
+    // Don't have a good test for this now since it hits google servers
+    implicit val tbindings = TestBindings.configurationWithAuthorizedTestUser
+    val auth = new AuthServletSupport
+    val q = for {
+      s <- auth.finishOAuth2Dance("code")
+    } yield ()
+    val (state, result) = q.run.run(TestBindings.defaultEmptyGlasswareState)
+    cond(result) {
+      case -\/(WrappedFailure(_, _)) => true
+    } should be(true)
+  }
+}
+
 class TestHttpRequestWrapper(url: String = "http://example.com/") extends HttpRequestWrapper {
   import stateTypes._
 
-  val items = Map("attachment" -> "atch", "timelineItem" -> "tli", "user_id" -> "one")
+  val items = Map("attachment" -> "atch", "timelineItem" -> "tli", "user_id" -> "one", "userId" -> "two")
   def getParameter(s: String) = items.get(s)
-  def getSessionAttribute[T](s: String): EarlyReturn \/ T = NoSuchParameter(s).left
+  def getSessionAttribute[T](s: String): EarlyReturn \/ T =
+    items.get(s).get.asInstanceOf[T].right[EarlyReturn]
   def getRequestURI: String = url
 }
 
@@ -134,8 +151,10 @@ class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
     } ~ TestBindings.configuration
 
     val a = new AttachmentProxyServletSupport()
-    val b = a.attachmentProxyAction.run(GlasswareState(new TestHttpRequestWrapper))
-    println("asdfff" + b.toString)
+    val (state, result) = a.attachmentProxyAction.run(GlasswareState(new TestHttpRequestWrapper))
+    cond(result) {
+      case -\/(WrappedFailure(_, _)) => true
+    } should be (true)
   }
 }
 
@@ -156,6 +175,8 @@ object TestBindings {
 
   implicit val configuration = testSpecific ~ UniversalBindings.configuration
   implicit val configurationWithAuthorizedTestUser = testSpecificWithAuthorizedUser ~ testSpecific ~ UniversalBindings.configuration
+
+  def defaultEmptyGlasswareState = GlasswareState(new TestHttpRequestWrapper)
 }
 
 object StateProblem {
@@ -197,4 +218,12 @@ object StateProblem {
     (x, y) = xandy
     z <- doSomething
   } yield (x, y, z)
+}
+
+@RunWith(classOf[JUnitRunner])
+class JavaInteropTests extends FunSuite with ShouldMatchers {
+  test("safelycall returns a correct value when called on a closure returning void") {
+    val result = JavaInterop.safelyCall(println("x"))(_ => 0, 1, _ => 2)
+    result should be(0)
+  }
 }
