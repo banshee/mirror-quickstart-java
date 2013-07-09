@@ -1,57 +1,40 @@
 package com.seattleglassware
 
-import java.io.FileInputStream
-import java.io.InputStream
-import java.util.Properties
-
-import scala.collection.JavaConversions.seqAsJavaList
 import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.collection.JavaConverters.collectionAsScalaIterableConverter
-import scala.util.control.Exception.ultimately
-import scala.PartialFunction._
-
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
-import com.escalatesoft.subcut.inject.bindingIdToString
-import com.google.api.client.auth.oauth2.AuthorizationCodeFlow
-import com.google.api.client.auth.oauth2.Credential
-import com.google.api.client.auth.oauth2.CredentialStore
-import com.google.api.client.extensions.appengine.http.UrlFetchTransport
-import com.google.api.client.googleapis.auth.oauth2.GoogleAuthorizationCodeFlow
-import com.google.api.client.http.GenericUrl
-import com.google.api.client.json.jackson.JacksonFactory
-import com.google.api.client.util.ByteStreams
-import com.google.api.services.mirror.Mirror
-import com.seattleglassware.BindingIdentifiers.ApplicationName
-import com.seattleglassware.BindingIdentifiers.OAuthPropertiesFileLocation
-
-import JavaInterop.asInstanceOfNotNull
+import com.seattleglassware.Misc.GenericUrlWithNewScheme
+import GlasswareTypes.EarlyReturn
+import GlasswareTypes.Effect
+import GlasswareTypes.ExecuteRedirect
+import GlasswareTypes.FailedCondition
+import GlasswareTypes.FinishedProcessing
+import GlasswareTypes.GlasswareState
+import GlasswareTypes.SetRedirectTo
+import GlasswareTypes.WrappedFailure
+import GlasswareTypes.YieldToNextFilter
+import GlasswareTypes.partialMonoidForEarlyReturn
+import GlasswareTypes.stateTypes.CombinedStateAndFailure
+import GlasswareTypes.stateTypes.HasLiftFromEitherOfFailureTypeOrA
+import GlasswareTypes.stateTypes.HasLiftFromStateWithFixedStateType
+import GlasswareTypes.stateTypes.HasLiftFromStateWithoutFailure
+import HttpRequestWrapper.Http
 import JavaInterop.safelyCall
-import javax.servlet.Filter
-import javax.servlet.FilterChain
-import javax.servlet.ServletRequest
-import javax.servlet.ServletResponse
-import javax.servlet.http.HttpServlet
-import javax.servlet.http.HttpServletRequest
-import javax.servlet.http.HttpServletResponse
-import scalaz.Lens
-import scalaz.Monoid
-import scalaz.EitherT
-import scalaz.Applicative
-import scalaz.MonadTrans
 import scalaz.Scalaz._
 import scalaz.State
-import scalaz.\/
-
-import com.seattleglassware.EitherTWithState._
-import GlasswareTypes._
+import scalaz.{ \/ => \/ }
+import HttpRequestWrapper._
+import com.seattleglassware.Misc._
+import com.seattleglassware.HttpSupport._
+import com.seattleglassware.GlasswareTypes.stateTypes._
+import com.google.api.client.googleapis.auth.oauth2.GoogleTokenResponse
+import com.google.api.client.auth.oauth2.TokenResponse
 
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import stateTypes._
-  
+  import com.seattleglassware.GlasswareTypes.stateTypes._
+
   import bindingModule._
-  import HttpRequestWrapper._
-  import com.seattleglassware.Misc._
 
   def appspotHttpsCheck = ifAll(
     predicates = List(hostnameMatches(_.contains("appspot.com")), urlSchemeIs(Http)),
@@ -86,17 +69,10 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
         threwException = t => WrappedFailure(t).left).liftState
     } yield accessToken
     // Turn all failures into an ExecuteRedirect
-    computation.fold(left => ExecuteRedirect(reason = left).left[String],
-      right => right.right[EarlyReturn])
+    computation.fold(
+      failureReason => ExecuteRedirect(reason = failureReason).left[String],
+      success => success.right[EarlyReturn])
   }
-
-  def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = ifAll(
-    predicates = List(urlPathMatches(fn)),
-    trueEffects = _ => List(YieldToNextFilter),
-    trueResult = FinishedProcessing(explanation).left,
-    falseResult = ().right)
-
-  def redirectToHttps(req: HttpRequestWrapper) = List(SetRedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
 
   def authenticationCheck: CombinedStateAndFailure[String] = for {
     _ <- pushComment("start authentication check").liftState
@@ -108,30 +84,78 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     _ <- pushComment("finish authentication check").liftState
   } yield token
 
-  def ifAll[T, U](predicates: Seq[Function[HttpRequestWrapper, Boolean]], trueEffects: HttpRequestWrapper => List[Effect], trueResult: T \/ U, falseResult: T \/ U) =
-    State[GlasswareState, T \/ U] {
-      case state @ GlasswareState(req, effects) =>
-        val alltrue = predicates.forall { _(req) }
-        if (alltrue) (GlasswareState(req, trueEffects(req).reverse ++ effects), trueResult) else (state, falseResult)
-    }
-
-  import scala.collection.JavaConverters._
-
-  def urlSchemeIs(scheme: HttpRequestWrapper.HttpRequestType)(req: HttpRequestWrapper) =
-    req.scheme == scheme
-
-  def hostnameMatches(fn: String => Boolean)(req: HttpRequestWrapper) =
-    fn(req.getHostname)
-
-  def urlPathMatches(fn: PartialFunction[List[String], Boolean])(req: HttpRequestWrapper) = {
-    val items = req.getRequestGenericUrl.getPathParts.asScala.filter { s => s != null && s.length > 0 }.toList
-    fn.lift(items) | false
-  }
-
-  def parameterMatches(parameterName: String, fn: String => Boolean)(req: HttpRequestWrapper) =
-    req.getRequestGenericUrl.getAll(parameterName).asScala.map(_.toString).find(fn).isDefined
 }
 
 class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
   val filterImplementation = (new AuthFilterSupport).authenticationCheck
+}
+
+// ----- 
+
+class AuthServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+  import com.seattleglassware.GlasswareTypes.stateTypes._
+
+  import bindingModule._
+  import HttpRequestWrapper._
+  import com.seattleglassware.Misc._
+  import com.seattleglassware.GlasswareTypes._
+  import com.seattleglassware.HttpSupport._
+
+  def finishOAuth2Dance(code: String): CombinedStateAndFailure[Int] = for {
+    _ <- pushComment("finishing OAuth2 dance").liftState
+    auth = new AuthUtil()
+    redirectUri <- getGenericUrl.liftState
+    flow <- auth.newAuthorizationCodeFlow.liftState
+    url <- getGenericUrl.map(_.newRawPath("/oauth2callback").toString)
+    tokenResponse <- flow.newTokenRequest(code)
+      .setRedirectUri(url)
+      .execute
+      .catchExceptions("newtokenrequest failed")
+      .liftState
+    userId <- tokenResponse.asInstanceOf[GoogleTokenResponse]
+      .parseIdToken
+      .getPayload
+      .getUserId
+      .catchExceptions("extracting userid from google token response failed")
+      .liftState
+    _ <- pushComment("Code exchange worked. User " + userId + " logged in.")
+      .liftState
+    _ <- auth.setUserId(userId).liftState
+    _ = flow.createAndStoreCredential(tokenResponse, userId)
+  } yield 1
+
+  def startOAuth2Dance = for {
+    _ <- pushComment("starting OAuth2 dance").liftState
+  } yield 1
+
+  def authServletAction: CombinedStateAndFailure[Int] = for {
+    _ <- ifAll(
+      predicates = List(parameterExists("error")),
+      trueEffects = req => List(Comment("error parameter exists"), SetResponseContentType("text/plain"), WriteText("\"Something went wrong during auth. Please check your log for details\"")),
+      trueResult = FailedCondition("The error parameter is set").left,
+      falseResult = ().right).liftState
+
+    code <- getOptionalParameter("code").liftState
+
+    dancefloor <- code.fold(startOAuth2Dance)(c => finishOAuth2Dance(c))
+
+    attachmentId <- getParameter("attachment").liftState
+    timelineItemId <- getParameter("timelineItem").liftState
+    userid <- getUserId.liftState
+
+    auth = AuthUtil()
+    credential <- auth.getCredential(userid).liftState
+
+    mc = new MirrorClient()
+    contentType <- mc.getAttachmentContentType(credential, timelineItemId, attachmentId).liftState
+    attachmentInputStream <- mc.getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
+
+    _ <- pushEffect(SetResponseContentType(contentType)).liftState
+    _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
+
+  } yield 1
+}
+
+class AuthServlet extends ServletInjectionShim[(String, String)]()(ProjectConfiguration.configuration) {
+  val servletImplementation = (new AttachmentProxyServletSupport).attachmentProxyAction
 }

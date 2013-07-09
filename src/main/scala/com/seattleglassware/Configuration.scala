@@ -8,9 +8,12 @@ import BindingIdentifiers._
 import java.util.Properties
 import com.google.api.client.auth.oauth2.CredentialStore
 import com.google.glassware.ListableAppEngineCredentialStore
+import com.google.api.client.auth.oauth2.Credential.AccessMethod
 
 object BindingIdentifiers {
   object OAuthPropertiesFileLocation extends BindingId
+  object AuthenticationClock extends BindingId
+  object TokenServerEncodedUrl extends BindingId
   object ApplicationName extends BindingId
 }
 

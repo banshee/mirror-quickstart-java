@@ -3,13 +3,11 @@ package com.seattleglassware
 import java.io.FileInputStream
 import java.io.InputStream
 import java.util.Properties
-
 import scala.collection.JavaConversions.seqAsJavaList
 import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.collection.JavaConverters.collectionAsScalaIterableConverter
 import scala.util.control.Exception.ultimately
 import scala.PartialFunction._
-
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
 import com.escalatesoft.subcut.inject.bindingIdToString
@@ -22,9 +20,7 @@ import com.google.api.client.http.GenericUrl
 import com.google.api.client.json.jackson.JacksonFactory
 import com.google.api.client.util.ByteStreams
 import com.google.api.services.mirror.Mirror
-import com.seattleglassware.BindingIdentifiers.ApplicationName
-import com.seattleglassware.BindingIdentifiers.OAuthPropertiesFileLocation
-
+import com.seattleglassware.BindingIdentifiers._
 import JavaInterop.asInstanceOfNotNull
 import JavaInterop.safelyCall
 import javax.servlet.Filter
@@ -42,13 +38,22 @@ import scalaz.MonadTrans
 import scalaz.Scalaz._
 import scalaz.State
 import scalaz.\/
-
 import com.seattleglassware.EitherTWithState._
 import GlasswareTypes._
+import com.google.api.client.auth.oauth2.TokenResponse
+import com.google.api.client.auth.oauth2.Credential.AccessMethod
+import com.google.api.client.http.HttpExecuteInterceptor
+import com.google.api.client.http.HttpRequestInitializer
+import com.google.api.client.util.Clock
+import HttpRequestWrapper._
+import com.seattleglassware.Misc._
+import com.seattleglassware.GlasswareTypes._
+import com.seattleglassware.HttpSupport._
+import com.google.api.client.auth.oauth2.CredentialStoreRefreshListener
 
 object GlasswareTypes {
   val stateTypes = StateGenerator[GlasswareState, EarlyReturn]
-  
+
   sealed abstract class EarlyReturn
   case class NoSuchParameter(name: String) extends EarlyReturn
   case class NoSuchSessionAttribute(name: String) extends EarlyReturn
@@ -66,6 +71,8 @@ object GlasswareTypes {
   case object YieldToNextFilter extends Effect
   case object PlaceholderEffect extends Effect
   case class Comment(s: String) extends Effect
+  case class WriteText(s: String) extends Effect
+  case class SetSessionAttribute(name: String, value: String) extends Effect
 
   implicit val partialMonoidForEarlyReturn = new Monoid[EarlyReturn] {
     case object NoOp extends EarlyReturn
@@ -86,7 +93,7 @@ object GlasswareTypes {
   }
 
   sealed case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
-  
+
   val effectsThroughGlasswareState = Lens.lensg[GlasswareState, List[Effect]](set = gs => effects => gs.copy(effects = effects),
     get = gs => gs.effects)
   val requestThroughGlasswareState = Lens.lensg[GlasswareState, HttpRequestWrapper](set = gs => req => gs.copy(req = req),
@@ -106,6 +113,13 @@ trait StatefulParameterOperations {
         val parameterValue = requestThroughGlasswareState.get(state).getParameter(parameterName)
         val result = parameterValue.toRightDisjunction(NoSuchParameter(parameterName))
         (state, result)
+    }
+
+  def getOptionalParameter(parameterName: String) =
+    State[GlasswareState, EarlyReturn \/ Option[String]] {
+      state =>
+        val parameterValue = requestThroughGlasswareState.get(state).getParameter(parameterName)
+        (state, parameterValue.right)
     }
 
   def pushEffect(e: Effect) =
@@ -163,7 +177,7 @@ trait StatefulParameterOperations {
   }
 }
 
-case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectable {
+case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectable with StatefulParameterOperations {
   import bindingModule._
   import EitherTWithState._
 
@@ -175,6 +189,11 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
   val urlFetchTransport = inject[UrlFetchTransport]
   val jacksonFactory = inject[JacksonFactory]
   val credentialStore = inject[CredentialStore]
+//  val credentialMethod = inject[AccessMethod]
+//  val tokenServerEncodedUrl = inject[String](TokenServerEncodedUrl)
+//  val clientAuthentication = inject[HttpExecuteInterceptor]
+//  val requestInitializer = inject[HttpRequestInitializer]
+//  val clock = inject[Clock](AuthenticationClock)
 
   def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
     for {
@@ -208,6 +227,14 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
     credential <- getCredential(userId)
     deleted <- credentialStore.delete(userId, credential).catchExceptions()
   } yield deleted
+
+  def setUserId(uid: String) = for {
+    _ <- pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
+  } yield uid
+}
+
+object SessionAttributes {
+  val USERID = "userId"
 }
 
 class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable {
@@ -249,7 +276,7 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
 
 trait ServerPlumbing extends StatefulParameterOperations {
   import stateTypes._
-  
+
   def doServerPlumbing[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)
@@ -268,3 +295,47 @@ trait ServerPlumbing extends StatefulParameterOperations {
   }
 }
 
+object HttpSupport {
+  import HttpRequestWrapper._
+  import com.seattleglassware.Misc.GenericUrlWithNewScheme
+  import com.seattleglassware.GlasswareTypes.stateTypes._
+
+  def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = ifAll(
+    predicates = List(urlPathMatches(fn)),
+    trueEffects = _ => List(YieldToNextFilter),
+    trueResult = FinishedProcessing(explanation).left,
+    falseResult = ().right)
+
+  def redirectToHttps(req: HttpRequestWrapper) = List(SetRedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
+
+  def ifAll[T, U](predicates: Seq[Function[HttpRequestWrapper, Boolean]], trueEffects: HttpRequestWrapper => List[Effect], trueResult: T \/ U, falseResult: T \/ U) =
+    State[GlasswareState, T \/ U] {
+      case state @ GlasswareState(req, effects) =>
+        val alltrue = predicates.forall { _(req) }
+        if (alltrue) (GlasswareState(req, trueEffects(req).reverse ++ effects), trueResult) else (state, falseResult)
+    }
+
+  import scala.collection.JavaConverters._
+
+  def getGenericUrl = for {
+    GlasswareState(req, _) <- get[GlasswareState].liftState
+    url = req.getRequestGenericUrl
+  } yield url
+
+  def urlSchemeIs(scheme: HttpRequestWrapper.HttpRequestType)(req: HttpRequestWrapper) =
+    req.scheme == scheme
+
+  def hostnameMatches(fn: String => Boolean)(req: HttpRequestWrapper) =
+    fn(req.getHostname)
+
+  def urlPathMatches(fn: PartialFunction[List[String], Boolean])(req: HttpRequestWrapper) = {
+    val items = req.getRequestGenericUrl.getPathParts.asScala.filter { s => s != null && s.length > 0 }.toList
+    fn.lift(items) | false
+  }
+
+  def parameterMatches(parameterName: String, fn: String => Boolean)(req: HttpRequestWrapper) =
+    req.getRequestGenericUrl.getAll(parameterName).asScala.map(_.toString).find(fn).isDefined
+
+  def parameterExists(parameterName: String)(req: HttpRequestWrapper) =
+    parameterMatches("error", _ != null)(req)
+}
