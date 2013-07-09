@@ -89,7 +89,7 @@ class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
   test("urlPathMatch should match") {
     implicit val bindingmodule = TestBindings.configuration
     val r = new TestHttpRequestWrapper("http://example.com/oauth2callback")
-    val result = HttpSupport.urlPathMatches { case "oauth2callback" :: Nil => true }(r)
+    val result = (new StatefulParameterOperations {}).urlPathMatches { case "oauth2callback" :: Nil => true }(r)
     result should be(true)
   }
 

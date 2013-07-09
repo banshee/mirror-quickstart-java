@@ -48,7 +48,6 @@ import com.google.api.client.util.Clock
 import HttpRequestWrapper._
 import com.seattleglassware.Misc._
 import com.seattleglassware.GlasswareTypes._
-import com.seattleglassware.HttpSupport._
 import com.google.api.client.auth.oauth2.CredentialStoreRefreshListener
 
 object GlasswareTypes {
@@ -138,43 +137,49 @@ trait StatefulParameterOperations {
       s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
     }
 
-  val isRedirectLocation: Effect =?> GenericUrl = {
-    case SetRedirectTo(x, _) => x
-  }
+    import HttpRequestWrapper._
+  import com.seattleglassware.Misc.GenericUrlWithNewScheme
+  import com.seattleglassware.GlasswareTypes.stateTypes._
 
-  def executeEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn]) = {
-    val requrl = req.getRequestURL().toString
-    val (specialeffects, normaleffects) = effects.partition(isRedirectLocation.isDefinedAt(_))
-    println(s"Run request =====\nearlyReturn: $earlyReturn\ndoeffects:\n$requrl\n$normaleffects\n$specialeffects\n========")
-    normaleffects.reverse foreach executeEffect(req, resp, chain, earlyReturn)
-    executeSpecialEffects(specialeffects, req, resp, chain, earlyReturn)
-  }
+  def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = ifAll(
+    predicates = List(urlPathMatches(fn)),
+    trueEffects = _ => List(YieldToNextFilter),
+    trueResult = FinishedProcessing(explanation).left,
+    falseResult = ().right)
 
-  def executeSpecialEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn]) = {
-    // If we get a ExecuteRedirect as the early return, 
-    // use the most recent redirect location as the address
-    earlyReturn collectFirst {
-      case ExecuteRedirect(_) =>
-        val url = effects collectFirst isRedirectLocation
-        url foreach {
-          x =>
-            println("Redirecting to $x")
-            resp.sendRedirect(x.toString)
-        }
+  def redirectToHttps(req: HttpRequestWrapper) = List(SetRedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
+
+  def ifAll[T, U](predicates: Seq[Function[HttpRequestWrapper, Boolean]], trueEffects: HttpRequestWrapper => List[Effect], trueResult: T \/ U, falseResult: T \/ U) =
+    State[GlasswareState, T \/ U] {
+      case state @ GlasswareState(req, effects) =>
+        val alltrue = predicates.forall { _(req) }
+        if (alltrue) (GlasswareState(req, trueEffects(req).reverse ++ effects), trueResult) else (state, falseResult)
     }
+
+  import scala.collection.JavaConverters._
+
+  def getGenericUrl = for {
+    GlasswareState(req, _) <- get[GlasswareState].liftState
+    url = req.getRequestGenericUrl
+  } yield url
+
+  def urlSchemeIs(scheme: HttpRequestWrapper.HttpRequestType)(req: HttpRequestWrapper) =
+    req.scheme == scheme
+
+  def hostnameMatches(fn: String => Boolean)(req: HttpRequestWrapper) =
+    fn(req.getHostname)
+
+  def urlPathMatches(fn: PartialFunction[List[String], Boolean])(req: HttpRequestWrapper) = {
+    val items = req.getRequestGenericUrl.getPathParts.asScala.filter { s => s != null && s.length > 0 }.toList
+    fn.lift(items) | false
   }
 
-  def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn])(e: Effect) = (earlyReturn, e) match {
-    case (_, SetResponseContentType(s)) => resp.setContentType(s)
-    case (_, CopyStreamToOutput(stream)) =>
-      ultimately(stream.close) {
-        ByteStreams.copy(stream, resp.getOutputStream)
-      }
-    case (Some(ExecuteRedirect(_)), SetRedirectTo(url, _)) => resp.sendRedirect(url.toString)
-    case (_, SetRedirectTo(url, _))                        => ()
-    case (_, YieldToNextFilter)                            => chain.get.doFilter(req, resp)
-    case (_, Comment(_)) | (_, PlaceholderEffect)          => // Do nothing
-  }
+  def parameterMatches(parameterName: String, fn: String => Boolean)(req: HttpRequestWrapper) =
+    req.getRequestGenericUrl.getAll(parameterName).asScala.map(_.toString).find(fn).isDefined
+
+  def parameterExists(parameterName: String)(req: HttpRequestWrapper) =
+    parameterMatches("error", _ != null)(req)
+
 }
 
 case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectable with StatefulParameterOperations {
@@ -189,11 +194,11 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
   val urlFetchTransport = inject[UrlFetchTransport]
   val jacksonFactory = inject[JacksonFactory]
   val credentialStore = inject[CredentialStore]
-//  val credentialMethod = inject[AccessMethod]
-//  val tokenServerEncodedUrl = inject[String](TokenServerEncodedUrl)
-//  val clientAuthentication = inject[HttpExecuteInterceptor]
-//  val requestInitializer = inject[HttpRequestInitializer]
-//  val clock = inject[Clock](AuthenticationClock)
+  //  val credentialMethod = inject[AccessMethod]
+  //  val tokenServerEncodedUrl = inject[String](TokenServerEncodedUrl)
+  //  val clientAuthentication = inject[HttpExecuteInterceptor]
+  //  val requestInitializer = inject[HttpRequestInitializer]
+  //  val clock = inject[Clock](AuthenticationClock)
 
   def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
     for {
@@ -293,49 +298,45 @@ trait ServerPlumbing extends StatefulParameterOperations {
     val (GlasswareState(_, effects), result) = s.run(GlasswareState(req))
     executeEffects(effects, req, resp, chain.some, result.swap.toOption)
   }
-}
 
-object HttpSupport {
-  import HttpRequestWrapper._
-  import com.seattleglassware.Misc.GenericUrlWithNewScheme
-  import com.seattleglassware.GlasswareTypes.stateTypes._
-
-  def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = ifAll(
-    predicates = List(urlPathMatches(fn)),
-    trueEffects = _ => List(YieldToNextFilter),
-    trueResult = FinishedProcessing(explanation).left,
-    falseResult = ().right)
-
-  def redirectToHttps(req: HttpRequestWrapper) = List(SetRedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
-
-  def ifAll[T, U](predicates: Seq[Function[HttpRequestWrapper, Boolean]], trueEffects: HttpRequestWrapper => List[Effect], trueResult: T \/ U, falseResult: T \/ U) =
-    State[GlasswareState, T \/ U] {
-      case state @ GlasswareState(req, effects) =>
-        val alltrue = predicates.forall { _(req) }
-        if (alltrue) (GlasswareState(req, trueEffects(req).reverse ++ effects), trueResult) else (state, falseResult)
-    }
-
-  import scala.collection.JavaConverters._
-
-  def getGenericUrl = for {
-    GlasswareState(req, _) <- get[GlasswareState].liftState
-    url = req.getRequestGenericUrl
-  } yield url
-
-  def urlSchemeIs(scheme: HttpRequestWrapper.HttpRequestType)(req: HttpRequestWrapper) =
-    req.scheme == scheme
-
-  def hostnameMatches(fn: String => Boolean)(req: HttpRequestWrapper) =
-    fn(req.getHostname)
-
-  def urlPathMatches(fn: PartialFunction[List[String], Boolean])(req: HttpRequestWrapper) = {
-    val items = req.getRequestGenericUrl.getPathParts.asScala.filter { s => s != null && s.length > 0 }.toList
-    fn.lift(items) | false
+  val isRedirectLocation: Effect =?> GenericUrl = {
+    case SetRedirectTo(x, _) => x
   }
 
-  def parameterMatches(parameterName: String, fn: String => Boolean)(req: HttpRequestWrapper) =
-    req.getRequestGenericUrl.getAll(parameterName).asScala.map(_.toString).find(fn).isDefined
+  def executeEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn]) = {
+    val requrl = req.getRequestURL().toString
+    val (specialeffects, normaleffects) = effects.partition(isRedirectLocation.isDefinedAt(_))
+    println(s"Run request =====\nearlyReturn: $earlyReturn\ndoeffects:\n$requrl\n$normaleffects\n$specialeffects\n========")
+    normaleffects.reverse foreach executeEffect(req, resp, chain, earlyReturn)
+    executeSpecialEffects(specialeffects, req, resp, chain, earlyReturn)
+  }
 
-  def parameterExists(parameterName: String)(req: HttpRequestWrapper) =
-    parameterMatches("error", _ != null)(req)
+  def executeSpecialEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn]) = {
+    // If we get a ExecuteRedirect as the early return, 
+    // use the most recent redirect location as the address
+    earlyReturn collectFirst {
+      case ExecuteRedirect(_) =>
+        val url = effects collectFirst isRedirectLocation
+        url foreach {
+          x =>
+            println("Redirecting to $x")
+            resp.sendRedirect(x.toString)
+        }
+    }
+  }
+
+  def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn])(e: Effect) = (earlyReturn, e) match {
+    case (_, SetResponseContentType(s)) => resp.setContentType(s)
+    case (_, CopyStreamToOutput(stream)) =>
+      ultimately(stream.close) {
+        ByteStreams.copy(stream, resp.getOutputStream)
+      }
+    case (Some(ExecuteRedirect(_)), SetRedirectTo(url, _)) => resp.sendRedirect(url.toString)
+    case (Some(ExecuteRedirect(_)), _)                     => ()
+    case (_, SetRedirectTo(url, _))                        => ()
+    case (_, YieldToNextFilter)                            => chain.get.doFilter(req, resp)
+    case (_, WriteText(s))                                 => throw new RuntimeException("WriteText not yet implemented")
+    case (_, SetSessionAttribute(name, value))             => throw new RuntimeException("SetSessionAttribute not yet implemented")
+    case (_, Comment(_)) | (_, PlaceholderEffect)          => // Do nothing
+  }
 }

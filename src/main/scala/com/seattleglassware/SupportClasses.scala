@@ -63,7 +63,6 @@ object Misc {
   }
 }
 
-
 trait HttpRequestWrapper {
   import HttpRequestWrapper._
 

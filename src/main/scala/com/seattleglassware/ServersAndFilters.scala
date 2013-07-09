@@ -26,7 +26,6 @@ import scalaz.State
 import scalaz.{ \/ => \/ }
 import HttpRequestWrapper._
 import com.seattleglassware.Misc._
-import com.seattleglassware.HttpSupport._
 import com.seattleglassware.GlasswareTypes.stateTypes._
 import com.google.api.client.googleapis.auth.oauth2.GoogleTokenResponse
 import com.google.api.client.auth.oauth2.TokenResponse
@@ -99,7 +98,6 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   import HttpRequestWrapper._
   import com.seattleglassware.Misc._
   import com.seattleglassware.GlasswareTypes._
-  import com.seattleglassware.HttpSupport._
 
   def finishOAuth2Dance(code: String): CombinedStateAndFailure[Int] = for {
     _ <- pushComment("finishing OAuth2 dance").liftState
