@@ -73,7 +73,8 @@ object EitherTWithState {
 
     implicit class HasLiftFromStateWithoutFailure[A](s: State[StateType, A]) {
       def liftState: CombinedStateAndFailure[A] = sublift(s)
-      private[this] def sublift[A](st: StateWithFixedStateType[A]): CombinedStateAndFailure[A] = MonadTrans[EitherTWithFailureType].liftM(st)
+      private[this] def sublift[A](st: StateWithFixedStateType[A]) = MonadTrans[EitherTWithFailureType].liftM(st)
     }
   }
 }
+

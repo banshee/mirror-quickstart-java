@@ -54,6 +54,7 @@ import com.google.api.services.mirror.model.Subscription
 
 object GlasswareTypes {
   val stateTypes = StateGenerator[GlasswareState, EarlyReturn]
+  import stateTypes._
 
   sealed abstract class EarlyReturn
   case class NoSuchParameter(name: String) extends EarlyReturn
@@ -93,6 +94,11 @@ object GlasswareTypes {
       t => WrappedFailure(t, extra.some).left)
   }
 
+  implicit class CatchExceptionsTransformerWrapper[T](t: => T) {
+    def catchExceptionsT(extra: => String = "(no additional information)") =
+      t.catchExceptions(extra).liftState
+  }
+
   sealed case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
 
   val effectsThroughGlasswareState = Lens.lensg[GlasswareState, List[Effect]](set = gs => effects => gs.copy(effects = effects),
@@ -101,12 +107,29 @@ object GlasswareTypes {
     get = gs => gs.req)
 }
 
-trait StatefulParameterOperations {
+trait StatefulParameterOperations extends Injectable {
   import com.seattleglassware.Misc._
   import HttpRequestWrapper._
+  import stateTypes._
+
+  implicit val bindingModule: BindingModule
+
+  private val oauthPropertiesFileLocation = inject[String](OAuthPropertiesFileLocation)
+  private val urlFetchTransport = inject[UrlFetchTransport]
+  private val jacksonFactory = inject[JacksonFactory]
+  private val credentialStore = inject[CredentialStore]
+  private val glassScope = inject[String](GlassScope)
+  private val applicationName = inject[String](ApplicationName)
+
 
   def wrapException[T](t: Throwable) = WrappedFailure(t).left[T]
   def wrapMissingParameter[T](s: String) = NoSuchParameter(s).left[T]
+
+  def setRedirectLocation(path: String, reason: String) = for {
+    GlasswareState(req, _) <- get[GlasswareState].liftState
+    url = req.getRequestGenericUrl.newRawPath(path)
+    _ <- pushEffect(SetRedirectTo(url, reason)).liftState
+  } yield url
 
   def getParameter(parameterName: String) =
     State[GlasswareState, EarlyReturn \/ String] {
@@ -116,12 +139,10 @@ trait StatefulParameterOperations {
         (state, result)
     }
 
-  def getOptionalParameter(parameterName: String) =
-    State[GlasswareState, EarlyReturn \/ Option[String]] {
-      state =>
-        val parameterValue = requestThroughGlasswareState.get(state).getParameter(parameterName)
-        (state, parameterValue.right)
-    }
+  def getOptionalParameter(parameterName: String) = for {
+    GlasswareState(req, _) <- get[GlasswareState].liftState
+    parameterValue <- req.getParameter(parameterName).liftState
+  } yield parameterValue
 
   def pushEffect(e: Effect) =
     State[GlasswareState, List[Effect]] {
@@ -131,6 +152,7 @@ trait StatefulParameterOperations {
     }
 
   def pushComment(s: String) = pushEffect(Comment(s))
+  def pushCommentT(s: String) = pushEffect(Comment(s)).liftState
 
   def getUserId = getSessionAttribute[String]("userId")
 
@@ -151,12 +173,16 @@ trait StatefulParameterOperations {
 
   def redirectToHttps(req: HttpRequestWrapper) = List(SetRedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
 
-  def ifAll[T, U](predicates: Seq[Function[HttpRequestWrapper, Boolean]], trueEffects: HttpRequestWrapper => List[Effect], trueResult: T \/ U, falseResult: T \/ U) =
-    State[GlasswareState, T \/ U] {
+  def ifAll[T, U](
+    predicates: Seq[Function[HttpRequestWrapper, Boolean]],
+    trueEffects: HttpRequestWrapper => List[Effect],
+    trueResult: T \/ U,
+    falseResult: T \/ U) =
+    EitherT[StateWithFixedStateType, T, U](State[GlasswareState, T \/ U] {
       case state @ GlasswareState(req, effects) =>
         val alltrue = predicates.forall { _(req) }
         if (alltrue) (GlasswareState(req, trueEffects(req).reverse ++ effects), trueResult) else (state, falseResult)
-    }
+    })
 
   import scala.collection.JavaConverters._
 
@@ -182,30 +208,10 @@ trait StatefulParameterOperations {
   def parameterExists(parameterName: String)(req: HttpRequestWrapper) =
     parameterMatches("error", _ != null)(req)
 
-}
-
-case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectable with StatefulParameterOperations {
-  import bindingModule._
-  import EitherTWithState._
-
-  val GLASS_SCOPE = "https://www.googleapis.com/auth/glass.timeline " +
-    "https://www.googleapis.com/auth/glass.location " +
-    "https://www.googleapis.com/auth/userinfo.profile"
-
-  val oauthPropertiesFileLocation = inject[String](OAuthPropertiesFileLocation)
-  val urlFetchTransport = inject[UrlFetchTransport]
-  val jacksonFactory = inject[JacksonFactory]
-  val credentialStore = inject[CredentialStore]
-  //  val credentialMethod = inject[AccessMethod]
-  //  val tokenServerEncodedUrl = inject[String](TokenServerEncodedUrl)
-  //  val clientAuthentication = inject[HttpExecuteInterceptor]
-  //  val requestInitializer = inject[HttpRequestInitializer]
-  //  val clock = inject[Clock](AuthenticationClock)
-
   def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
     for {
       authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation)).
-        catchExceptions(s"open auth file $oauthPropertiesFileLocation")
+        catchExceptions(s"open auth file oauthPropertiesFileLocation")
 
       authProperties = new Properties
 
@@ -219,7 +225,7 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
         catchExceptions("error getting client secret")
     } yield {
       new GoogleAuthorizationCodeFlow.Builder(urlFetchTransport, jacksonFactory,
-        clientId, clientSecret, Seq(GLASS_SCOPE)).setAccessType("offline")
+        clientId, clientSecret, Seq(glassScope)).setAccessType("offline")
         .setCredentialStore(credentialStore).build();
     }
   }
@@ -232,47 +238,47 @@ case class AuthUtil(implicit val bindingModule: BindingModule) extends Injectabl
 
   def clearUserId(userId: String) = for {
     credential <- getCredential(userId)
-    deleted <- credentialStore.delete(userId, credential).catchExceptions()
+    deleted <- credentialStore.delete(userId, credential)
+      .catchExceptions()
   } yield deleted
 
   def setUserId(uid: String) = for {
     _ <- pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
   } yield uid
-}
-
-object SessionAttributes {
-  val USERID = "userId"
-}
-
-class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable with StatefulParameterOperations {
-  import bindingModule._
 
   def getAttachmentInputStream(credential: Credential, timelineItemId: String, attachmentId: String) = for {
-    (mirror, attachments, attachmentsMetadata) <- getAttachmentMetadata(credential, timelineItemId, attachmentId)
-    url <- attachmentsMetadata.getContentUrl.catchExceptions("could not get content url for attachment")
-    genericUrl <- new GenericUrl(url).catchExceptions(s"could not build genericUrl from [$url]")
+    mirror <- getMirror(credential)
+    attachmentsMetadata <- getAttachmentMetadata(mirror, timelineItemId, attachmentId)
+    url <- attachmentsMetadata.getContentUrl
+      .catchExceptions("could not get content url for attachment")
+    genericUrl <- new GenericUrl(url)
+      .catchExceptions(s"could not build genericUrl from [$url]")
     request = mirror.getRequestFactory.buildGetRequest(genericUrl)
-    resp <- request.execute.catchExceptions("error fetching a mirror request")
-    content <- resp.getContent.catchExceptions("error getting the content of an attachment")
+    resp <- request.execute
+      .catchExceptions("error fetching a mirror request")
+    content <- resp.getContent
+      .catchExceptions("error getting the content of an attachment")
   } yield content
 
-  def getAttachmentMetadata(credential: Credential, timelineItemId: String, attachmentId: String) = for {
-    (mirror, attachments) <- getAttachments(credential)
-    attachmentsRequest <- attachments.get(timelineItemId, attachmentId).catchExceptions("error creating attachments request")
-    attachmentsMetadata <- attachmentsRequest.execute.catchExceptions("error executing attachments fetch")
-  } yield (mirror, attachments, attachmentsMetadata)
-
-  def getAttachments(credential: Credential) = for {
-    mirror <- getMirror(credential)
-    attachments = mirror.timeline.attachments
-  } yield (mirror, attachments)
+  def getAttachmentMetadata(mirror: Mirror, timelineItemId: String, attachmentId: String) = {
+    for {
+      attachments <- mirror.timeline.attachments
+        .catchExceptions("failed to get timeline attachments")
+      attachmentsRequest <- attachments.get(timelineItemId, attachmentId)
+        .catchExceptions("error creating attachments request")
+      attachmentsMetadata <- attachmentsRequest.execute
+        .catchExceptions("error executing attachments fetch")
+    } yield attachmentsMetadata
+  }
 
   def getMirror(credential: Credential) =
-    new Mirror.Builder(urlFetchTransport, jacksonFactory, credential).
-      setApplicationName(applicationName).build().right[EarlyReturn]
+    new Mirror.Builder(urlFetchTransport, jacksonFactory, credential)
+      .setApplicationName(applicationName)
+      .build()
+      .right[EarlyReturn]
 
-  def getAttachmentContentType(credential: Credential, timelineItemId: String, attachmentId: String): EarlyReturn \/ String = for {
-    (_, _, metadata) <- getAttachmentMetadata(credential, timelineItemId, attachmentId)
+  def getAttachmentContentType(mirror: Mirror, timelineItemId: String, attachmentId: String): EarlyReturn \/ String = for {
+    metadata <- getAttachmentMetadata(mirror, timelineItemId, attachmentId)
     contentType <- metadata.getContentType.catchExceptions("no content type")
   } yield contentType
 
@@ -294,15 +300,16 @@ class MirrorClient(implicit val bindingModule: BindingModule) extends Injectable
       .execute
       .catchExceptions("failed to insert subscription.")
   } yield subscription
+}
 
-  val urlFetchTransport = inject[UrlFetchTransport]
-  val jacksonFactory = inject[JacksonFactory]
-  val applicationName = inject[String](ApplicationName)
+object SessionAttributes {
+  val USERID = "userId"
 }
 
 trait ServerPlumbing extends StatefulParameterOperations {
   import stateTypes._
-
+  implicit val bindingModule: BindingModule
+  
   def doServerPlumbing[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)

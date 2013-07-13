@@ -12,9 +12,13 @@ import com.google.api.client.auth.oauth2.Credential.AccessMethod
 
 object BindingIdentifiers {
   object OAuthPropertiesFileLocation extends BindingId
+  object GlassScope extends BindingId
   object AuthenticationClock extends BindingId
   object TokenServerEncodedUrl extends BindingId
   object ApplicationName extends BindingId
+}
+
+class BoundValuesx(implicit val bindingModule: BindingModule) extends Injectable {
 }
 
 object ProjectConfiguration {
@@ -30,11 +34,8 @@ object UniversalBindings {
     bind[UrlFetchTransport] toSingle (new UrlFetchTransport)
     bind[JacksonFactory] toSingle (new JacksonFactory)
     bind[CredentialStore] toSingle (new ListableAppEngineCredentialStore)
-    //    bind[Z] toProvider { codeToGetInstanceOfZ() }
-    //    bind[A] toProvider { implicit module => new AnotherInjectedClass(param1, param2) } // module singleton
-    //    bind[B] to newInstanceOf[Fred] // create a new instance of Fred every time - Fred require injection
-    //    bind[C] to moduleInstanceOf[Jane] // create a module scoped singleton Jane that will be used
-    //    bind[Int] idBy PoolSize to 3 // bind an Int identified by PoolSize to constant 3
-    //    bind[String] idBy ServerURL to "http://escalatesoft.com"
+    bind[String] idBy GlassScope toSingle "https://www.googleapis.com/auth/glass.timeline " +
+      "https://www.googleapis.com/auth/glass.location " +
+      "https://www.googleapis.com/auth/userinfo.profile"
   }
 }

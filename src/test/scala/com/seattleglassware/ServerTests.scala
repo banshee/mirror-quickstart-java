@@ -80,16 +80,10 @@ class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
 
 @RunWith(classOf[JUnitRunner])
 class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
-  test("can create an AuthUtil instance") {
-    implicit val bindingmodule = TestBindings.configuration
-    val a = new AuthUtil()
-    val cf = a.newAuthorizationCodeFlow
-  }
-
   test("urlPathMatch should match") {
     implicit val bindingmodule = TestBindings.configuration
     val r = new TestHttpRequestWrapper("http://example.com/oauth2callback")
-    val result = (new StatefulParameterOperations {}).urlPathMatches { case "oauth2callback" :: Nil => true }(r)
+    val result = (new AuthFilterSupport {}).urlPathMatches { case "oauth2callback" :: Nil => true }(r)
     result should be(true)
   }
 

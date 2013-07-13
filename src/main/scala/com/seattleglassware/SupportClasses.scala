@@ -48,7 +48,7 @@ import GlasswareTypes._
 
 object Misc {
   type =?>[A, B] = PartialFunction[A, B]
- 
+
   implicit class GenericUrlWithNewScheme(u: GenericUrl) {
     def newScheme(scheme: String) = {
       val result = u.clone
@@ -110,20 +110,29 @@ trait NonInitializedFilter extends Filter {
 
 trait FilterScaffold[T] { self: ServerPlumbing with Filter =>
   import stateTypes._
-  
+
   val filterImplementation: CombinedStateAndFailure[T]
   override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
     doFilterPlumbing(req, resp, chain, filterImplementation)
 }
 
-trait ServletScaffold[T] extends HttpServlet { self: ServerPlumbing =>
+trait ServletScaffold[T] extends HttpServlet {
+  self: ServerPlumbing =>
+
   import stateTypes._
-  
-  val servletImplementation: CombinedStateAndFailure[T]
+
+  def defaultImplementation: CombinedStateAndFailure[T] =
+    throw new RuntimeException("no implementation")
+  def implementationOfGet: CombinedStateAndFailure[T] =
+    defaultImplementation
+  def implementationOfPost: CombinedStateAndFailure[T] =
+    defaultImplementation
+
   override def doGet(req: HttpServletRequest, resp: HttpServletResponse) =
-    doServerPlumbing(req, resp, servletImplementation)
+    doServerPlumbing(req, resp, implementationOfGet)
+  override def doPost(req: HttpServletRequest, resp: HttpServletResponse) =
+    doServerPlumbing(req, resp, implementationOfPost)
 }
 
 abstract class FilterInjectionShim[T](implicit val bindingModule: BindingModule) extends Filter with ServerPlumbing with FilterScaffold[String]
 abstract class ServletInjectionShim[T](implicit val bindingModule: BindingModule) extends HttpServlet with ServerPlumbing with ServletScaffold[T]
-

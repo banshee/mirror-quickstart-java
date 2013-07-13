@@ -53,19 +53,11 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
       case h :: t => p == h
     }, explanation)
 
-  val auth = AuthUtil()
-
-  def setRedirectLocation(path: String, reason: String) = for {
-    GlasswareState(req, _) <- get[GlasswareState].liftState
-    url = req.getRequestGenericUrl.newRawPath(path)
-    _ <- pushEffect(SetRedirectTo(url, reason)).liftState
-  } yield url
-
   def getAccessToken = {
     val computation = for {
       redirectlocation <- setRedirectLocation("/oauth2callback", "failed to get auth token")
       userId <- getUserId.liftState
-      credential <- auth.getCredential(userId).liftState
+      credential <- getCredential(userId).liftState
       accessToken <- safelyCall(credential.getAccessToken)(
         returnedValid = _.right[EarlyReturn],
         returnedNull = FailedCondition("no access token").left,
@@ -103,43 +95,40 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   import com.seattleglassware.Misc._
   import com.seattleglassware.GlasswareTypes._
 
-  def finishOAuth2Dance(code: String): CombinedStateAndFailure[Int] = for {
+  def finishOAuth2Dance(code: String) = for {
     _ <- pushComment("finishing OAuth2 dance").liftState
-    auth = new AuthUtil()
+
     redirectUri <- getGenericUrl.liftState
-    flow <- auth.newAuthorizationCodeFlow.liftState
+    flow <- newAuthorizationCodeFlow.liftState
     url <- getGenericUrl.map(_.newRawPath("/oauth2callback").toString)
 
     tokenResponse <- flow.newTokenRequest(code)
       .setRedirectUri(url)
       .execute
-      .catchExceptions("newtokenrequest failed")
-      .liftState
+      .catchExceptionsT("newTokenRequest failed")
 
     userId <- tokenResponse.asInstanceOf[GoogleTokenResponse]
       .parseIdToken
       .getPayload
       .getUserId
-      .catchExceptions("extracting userid from google token response failed")
-      .liftState
+      .catchExceptionsT("extracting userid from google token response failed")
 
-    _ <- pushComment("Code exchange worked. User " + userId + " logged in.")
-      .liftState
+    _ <- pushCommentT("Code exchange worked. User " + userId + " logged in.")
 
-    _ <- auth.setUserId(userId).liftState
+    _ <- setUserId(userId).liftState
 
-    _ = flow.createAndStoreCredential(tokenResponse, userId)
-
-    GlasswareState(req, _) <- get[GlasswareState].liftState
+    _ <- flow.createAndStoreCredential(tokenResponse, userId)
+      .catchExceptionsT("createAndStoreCredential failed")
 
     _ <- bootstrapNewUser(userId)
-  } yield 1
+
+    destination <- setRedirectLocation("/", "finished oauth2 dance")
+  } yield "finishOAuth2Dance"
 
   def bootstrapNewUser(userId: String) = for {
     _ <- pushComment("bootstrapping new user").liftState
-    auth <- (new AuthUtil).liftState
-    flow <- auth.newAuthorizationCodeFlow.liftState
-    credential <- flow.loadCredential(userId).liftState
+
+    credential <- getCredential(userId).liftState
 
     catUrl <- getGenericUrl
     imageUrls = List(catUrl.newRawPath("/static/images/chipotle-tube-640x360.jpg"))
@@ -148,18 +137,15 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .setId(MainServlet.CONTACT_NAME)
       .setDisplayName(MainServlet.CONTACT_NAME)
       .setImageUrls(imageUrls.map(_.toString).asJava)
-      .catchExceptions("failed to create new contact")
-      .liftState
+      .catchExceptionsT("failed to create new contact")
 
-    mc <- (new MirrorClient).liftState
-    insertedContact <- mc.insertContact(credential, starterProjectContact).liftState
-    subscription <- mc.insertSubscription(
+    insertedContact <- insertContact(credential, starterProjectContact).liftState
+    subscription <- insertSubscription(
       credential,
       catUrl.newRawPath("/notify").toString,
       userId,
       "timeline")
-      .catchExceptions("Failed to create timeline subscription. Might be running on localhost")
-      .liftState
+      .catchExceptionsT("Failed to create timeline subscription. Might be running on localhost")
 
     timelineItem <- (new TimelineItem)
       .setText("Welcome to the Glass Java Quick Start")
@@ -169,36 +155,22 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
 
   def startOAuth2Dance = for {
     _ <- pushComment("starting OAuth2 dance").liftState
-  } yield 1
+  } yield "startOAuth2Dance"
 
-  def authServletAction: CombinedStateAndFailure[Int] = for {
+  def authServletAction = for {
     _ <- ifAll(
       predicates = List(parameterExists("error")),
       trueEffects = req => List(Comment("error parameter exists"), SetResponseContentType("text/plain"), WriteText("\"Something went wrong during auth. Please check your log for details\"")),
       trueResult = FailedCondition("The error parameter is set").left,
-      falseResult = ().right).liftState
+      falseResult = ().right)
 
-    code <- getOptionalParameter("code").liftState
+    code <- getOptionalParameter("code")
 
-    dancefloor <- code.fold(startOAuth2Dance)(c => finishOAuth2Dance(c))
-
-    attachmentId <- getParameter("attachment").liftState
-    timelineItemId <- getParameter("timelineItem").liftState
-    userid <- getUserId.liftState
-
-    auth = AuthUtil()
-    credential <- auth.getCredential(userid).liftState
-
-    mc = new MirrorClient()
-    contentType <- mc.getAttachmentContentType(credential, timelineItemId, attachmentId).liftState
-    attachmentInputStream <- mc.getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
-
-    _ <- pushEffect(SetResponseContentType(contentType)).liftState
-    _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
-
-  } yield 1
+    result <- code.fold(startOAuth2Dance)(c => finishOAuth2Dance(c))
+  } yield result
 }
 
-class AuthServlet extends ServletInjectionShim[(String, String)]()(ProjectConfiguration.configuration) {
-  val servletImplementation = (new AttachmentProxyServletSupport).attachmentProxyAction
+class AuthServlet extends ServletInjectionShim[String]()(ProjectConfiguration.configuration) {
+  val servletImplementation = (new AuthServletSupport).authServletAction
 }
+

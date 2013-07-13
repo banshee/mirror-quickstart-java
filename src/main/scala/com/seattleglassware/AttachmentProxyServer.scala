@@ -3,13 +3,11 @@ package com.seattleglassware
 import java.io.FileInputStream
 import java.io.InputStream
 import java.util.Properties
-
 import scala.collection.JavaConversions.seqAsJavaList
 import scala.collection.JavaConverters.asScalaBufferConverter
 import scala.collection.JavaConverters.collectionAsScalaIterableConverter
 import scala.util.control.Exception.ultimately
 import scala.PartialFunction._
-
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
 import com.escalatesoft.subcut.inject.bindingIdToString
@@ -22,9 +20,7 @@ import com.google.api.client.http.GenericUrl
 import com.google.api.client.json.jackson.JacksonFactory
 import com.google.api.client.util.ByteStreams
 import com.google.api.services.mirror.Mirror
-import com.seattleglassware.BindingIdentifiers.ApplicationName
-import com.seattleglassware.BindingIdentifiers.OAuthPropertiesFileLocation
-
+import com.seattleglassware.BindingIdentifiers._
 import JavaInterop.asInstanceOfNotNull
 import JavaInterop.safelyCall
 import javax.servlet.Filter
@@ -42,24 +38,22 @@ import scalaz.MonadTrans
 import scalaz.Scalaz._
 import scalaz.State
 import scalaz.\/
-
 import com.seattleglassware.EitherTWithState._
 import GlasswareTypes._
 
 class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import stateTypes._
-  
+  import bindingModule._
+
   def attachmentProxyAction: CombinedStateAndFailure[(String, String)] = for {
     attachmentId <- getParameter("attachment").liftState
     timelineItemId <- getParameter("timelineItem").liftState
+    
     userid <- getUserId.liftState
-
-    auth = AuthUtil()
-    credential <- auth.getCredential(userid).liftState
-
-    mc = new MirrorClient()
-    contentType <- mc.getAttachmentContentType(credential, timelineItemId, attachmentId).liftState
-    attachmentInputStream <- mc.getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
+    credential <- getCredential(userid).liftState
+    mirror <- getMirror(credential).liftState
+    contentType <- getAttachmentContentType(mirror, timelineItemId, attachmentId).liftState
+    attachmentInputStream <- getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
 
     _ <- pushEffect(SetResponseContentType(contentType)).liftState
     _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
@@ -68,5 +62,5 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
 }
 
 class AttachmentProxyServlet extends ServletInjectionShim[(String, String)]()(ProjectConfiguration.configuration) {
-  val servletImplementation = (new AttachmentProxyServletSupport).attachmentProxyAction
+  override val implementationOfGet = (new AttachmentProxyServletSupport).attachmentProxyAction
 }
