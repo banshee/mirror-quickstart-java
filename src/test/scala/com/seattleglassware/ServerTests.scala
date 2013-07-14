@@ -168,47 +168,6 @@ object TestBindings {
   def defaultEmptyGlasswareState = GlasswareState(new TestHttpRequestWrapper)
 }
 
-object StateProblem {
-  case class MyStateType
-  case class MyRightType
-  case class MyLeftType
-
-  type StateWithFixedStateType[+A] = State[MyStateType, A]
-  type EitherTWithFailureType[F[+_], A] = EitherT[F, MyLeftType, A]
-  type CombinedStateAndFailure[A] = EitherTWithFailureType[StateWithFixedStateType, A]
-
-  def doSomething: CombinedStateAndFailure[MyRightType] = {
-    val x = State[MyStateType, MyLeftType \/ MyRightType] {
-      case s => (s, MyRightType().right)
-    }
-    EitherT[StateWithFixedStateType, MyLeftType, MyRightType](x)
-  }
-
-  val comprehension = for {
-    a <- doSomething
-    b <- doSomething
-  } yield (a, b)
-
-  implicit val feedTheCompiler = new Monoid[MyLeftType] {
-    override def zero = MyLeftType()
-    override def append(a: MyLeftType, b: => MyLeftType) = a
-  }
-
-  val otherComprehension = for {
-    // this gets a compile error:
-    // could not find implicit value for parameter M: scalaz.Monoid[com.seattleglassware.StateProblem.MyLeftType]
-    (x, y) <- comprehension
-    z <- doSomething
-  } yield (x, y, z)
-
-  // 
-  val otherComprehensionWithWorkaround = for {
-    xandy <- comprehension
-    (x, y) = xandy
-    z <- doSomething
-  } yield (x, y, z)
-}
-
 @RunWith(classOf[JUnitRunner])
 class JavaInteropTests extends FunSuite with ShouldMatchers {
   test("safelycall returns a correct value when called on a closure returning void") {
