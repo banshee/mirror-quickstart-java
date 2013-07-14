@@ -33,11 +33,14 @@ import javax.servlet.http.HttpServletResponse
 import scalaz.Lens
 import scalaz.Monoid
 import scalaz.EitherT
+import scalaz.Bind
 import scalaz.Applicative
 import scalaz.MonadTrans
 import scalaz.Scalaz._
 import scalaz.State
 import scalaz.\/
+import scalaz.-\/
+import scalaz.\/-
 import com.seattleglassware.EitherTWithState._
 import GlasswareTypes._
 import com.google.api.client.auth.oauth2.TokenResponse
@@ -64,7 +67,8 @@ object GlasswareTypes {
   case class FailedCondition(explanation: String) extends EarlyReturn
   case class FinishedProcessing(explanation: String) extends EarlyReturn
   case class NoAuthenticationToken(reason: EarlyReturn) extends EarlyReturn
-  case class ExecuteRedirect(reason: EarlyReturn) extends EarlyReturn
+  case class ExecuteRedirect(destination: GenericUrl, reason: String) extends EarlyReturn
+  case object PlaceholderReturn extends EarlyReturn
 
   sealed abstract class Effect
   case class SetResponseContentType(value: String) extends Effect
@@ -121,15 +125,8 @@ trait StatefulParameterOperations extends Injectable {
   private val glassScope = inject[String](GlassScope)
   private val applicationName = inject[String](ApplicationName)
 
-
   def wrapException[T](t: Throwable) = WrappedFailure(t).left[T]
   def wrapMissingParameter[T](s: String) = NoSuchParameter(s).left[T]
-
-  def setRedirectLocation(path: String, reason: String) = for {
-    GlasswareState(req, _) <- get[GlasswareState].liftState
-    url = req.getRequestGenericUrl.newRawPath(path)
-    _ <- pushEffect(SetRedirectTo(url, reason)).liftState
-  } yield url
 
   def getParameter(parameterName: String) =
     State[GlasswareState, EarlyReturn \/ String] {
@@ -145,14 +142,13 @@ trait StatefulParameterOperations extends Injectable {
   } yield parameterValue
 
   def pushEffect(e: Effect) =
-    State[GlasswareState, List[Effect]] {
+    State[GlasswareState, EarlyReturn \/ Unit] {
       case s =>
         val newstate = effectsThroughGlasswareState.mod(effects => e :: effects, s)
-        (newstate, newstate.effects)
-    }
+        (newstate, ().right)
+    }.liftState
 
   def pushComment(s: String) = pushEffect(Comment(s))
-  def pushCommentT(s: String) = pushEffect(Comment(s)).liftState
 
   def getUserId = getSessionAttribute[String]("userId")
 
@@ -173,6 +169,15 @@ trait StatefulParameterOperations extends Injectable {
 
   def redirectToHttps(req: HttpRequestWrapper) = List(SetRedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
 
+  def pushRedirectToUrl(url: GenericUrl, reason: String) =
+    pushEffect(SetRedirectTo(url, reason))
+
+  def pushRedirectToPath(path: String, reason: String) = for {
+    url <- getGenericUrl
+    urlWithNewPath = url.newRawPath(path)
+    _ <- pushRedirectToUrl(urlWithNewPath, reason)
+  } yield url
+
   def ifAll[T, U](
     predicates: Seq[Function[HttpRequestWrapper, Boolean]],
     trueEffects: HttpRequestWrapper => List[Effect],
@@ -190,6 +195,9 @@ trait StatefulParameterOperations extends Injectable {
     GlasswareState(req, _) <- get[GlasswareState].liftState
     url = req.getRequestGenericUrl
   } yield url
+
+  def getGenericUrlWithNewPath(path: String) =
+    getGenericUrl.map(_.newRawPath(path))
 
   def urlSchemeIs(scheme: HttpRequestWrapper.HttpRequestType)(req: HttpRequestWrapper) =
     req.scheme == scheme
@@ -226,7 +234,7 @@ trait StatefulParameterOperations extends Injectable {
     } yield {
       new GoogleAuthorizationCodeFlow.Builder(urlFetchTransport, jacksonFactory,
         clientId, clientSecret, Seq(glassScope)).setAccessType("offline")
-        .setCredentialStore(credentialStore).build();
+        .setCredentialStore(credentialStore).build()
     }
   }
 
@@ -300,6 +308,18 @@ trait StatefulParameterOperations extends Injectable {
       .execute
       .catchExceptions("failed to insert subscription.")
   } yield subscription
+
+  def trident[U](x: => U)(returnedValid: U => CombinedStateAndFailure[U],
+                          returnedNull: => CombinedStateAndFailure[U],
+                          threwException: Throwable => CombinedStateAndFailure[U]) =
+    try {
+      x match {
+        case null => returnedNull
+        case x    => returnedValid(x)
+      }
+    } catch {
+      case t: Throwable => threwException(t)
+    }
 }
 
 object SessionAttributes {
@@ -309,11 +329,11 @@ object SessionAttributes {
 trait ServerPlumbing extends StatefulParameterOperations {
   import stateTypes._
   implicit val bindingModule: BindingModule
-  
+
   def doServerPlumbing[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)
-    executeEffects(effects, req, resp, None, result.swap.toOption)
+    executeEffects(effects, req, resp, None, result)
   }
 
   def doFilterPlumbing[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit =
@@ -324,47 +344,28 @@ trait ServerPlumbing extends StatefulParameterOperations {
 
   private[this] def doHttpFilter[T](req: HttpServletRequest, resp: HttpServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
     val (GlasswareState(_, effects), result) = s.run(GlasswareState(req))
-    executeEffects(effects, req, resp, chain.some, result.swap.toOption)
+    executeEffects(effects, req, resp, chain.some, result)
   }
 
   val isRedirectLocation: Effect =?> GenericUrl = {
     case SetRedirectTo(x, _) => x
   }
 
-  def executeEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn]) = {
+  def executeEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], result: EarlyReturn \/ T) = {
     val requrl = req.getRequestURL().toString
-    val (specialeffects, normaleffects) = effects.partition(isRedirectLocation.isDefinedAt(_))
-    println(s"Run request =====\nearlyReturn: $earlyReturn\ndoeffects:\n$requrl\n$normaleffects\n$specialeffects\n========")
-    normaleffects.reverse foreach executeEffect(req, resp, chain, earlyReturn)
-    executeSpecialEffects(specialeffects, req, resp, chain, earlyReturn)
+    println(s"Run request =====\nearlyReturn: $result\ndoeffects:\n$requrl\n$effects\n========")
+    effects.reverse foreach executeEffect(req, resp, chain, result)
   }
 
-  def executeSpecialEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn]) = {
-    // If we get a ExecuteRedirect as the early return, 
-    // use the most recent redirect location as the address
-    earlyReturn collectFirst {
-      case ExecuteRedirect(_) =>
-        val url = effects collectFirst isRedirectLocation
-        url foreach {
-          x =>
-            println("Redirecting to $x")
-            resp.sendRedirect(x.toString)
-        }
-    }
-  }
-
-  def executeEffect(req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], earlyReturn: Option[EarlyReturn])(e: Effect) = (earlyReturn, e) match {
-    case (_, SetResponseContentType(s)) => resp.setContentType(s)
-    case (_, CopyStreamToOutput(stream)) =>
+  def executeEffect[T](req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], result: EarlyReturn \/ T)(e: Effect) = e match {
+    case SetResponseContentType(s) => resp.setContentType(s)
+    case CopyStreamToOutput(stream) =>
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
-    case (Some(ExecuteRedirect(_)), SetRedirectTo(url, _)) => resp.sendRedirect(url.toString)
-    case (Some(ExecuteRedirect(_)), _)                     => ()
-    case (_, SetRedirectTo(url, _))                        => ()
-    case (_, YieldToNextFilter)                            => chain.get.doFilter(req, resp)
-    case (_, WriteText(s))                                 => throw new RuntimeException("WriteText not yet implemented")
-    case (_, SetSessionAttribute(name, value))             => throw new RuntimeException("SetSessionAttribute not yet implemented")
-    case (_, Comment(_)) | (_, PlaceholderEffect)          => // Do nothing
+    case YieldToNextFilter                => chain.get.doFilter(req, resp)
+    case WriteText(s)                     => throw new RuntimeException("WriteText not yet implemented")
+    case SetSessionAttribute(name, value) => throw new RuntimeException("SetSessionAttribute not yet implemented")
+    case Comment(_) | PlaceholderEffect   => // Do nothing
   }
 }

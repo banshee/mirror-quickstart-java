@@ -55,8 +55,8 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
     contentType <- getAttachmentContentType(mirror, timelineItemId, attachmentId).liftState
     attachmentInputStream <- getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
 
-    _ <- pushEffect(SetResponseContentType(contentType)).liftState
-    _ <- pushEffect(CopyStreamToOutput(attachmentInputStream)).liftState
+    _ <- pushEffect(SetResponseContentType(contentType))
+    _ <- pushEffect(CopyStreamToOutput(attachmentInputStream))
 
   } yield (attachmentId, timelineItemId)
 }

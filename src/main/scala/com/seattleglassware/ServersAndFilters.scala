@@ -53,9 +53,8 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
       case h :: t => p == h
     }, explanation)
 
-  def getAccessToken = {
-    val computation = for {
-      redirectlocation <- setRedirectLocation("/oauth2callback", "failed to get auth token")
+  def getAccessToken: CombinedStateAndFailure[String] = {
+    val tokenFetcher = for {
       userId <- getUserId.liftState
       credential <- getCredential(userId).liftState
       accessToken <- safelyCall(credential.getAccessToken)(
@@ -63,10 +62,14 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
         returnedNull = FailedCondition("no access token").left,
         threwException = t => WrappedFailure(t).left).liftState
     } yield accessToken
-    // Turn all failures into an ExecuteRedirect
-    computation.fold(
-      failureReason => ExecuteRedirect(reason = failureReason).left[String],
-      success => success.right[EarlyReturn])
+
+    // The first computation can fail with a left value.  If that
+    // happens, redirect to /oauth2callback
+
+    for {
+      failureUrl <- getGenericUrlWithNewPath("/oauth2callback")
+      result <- tokenFetcher.leftMap(error => ExecuteRedirect(failureUrl, "failed to get access token"))
+    } yield result
   }
 
   def authenticationCheck: CombinedStateAndFailure[String] = for {
@@ -74,11 +77,22 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     _ <- appspotHttpsCheck.liftState
     _ <- middleOfAuthFlowCheck.liftState
     _ <- isRobotCheck.liftState
-    token <- getAccessToken.liftState
-    _ <- pushEffect(YieldToNextFilter).liftState
-    _ <- pushComment("finish authentication check").liftState
+    token <- getAccessToken
+    _ <- pushEffect(YieldToNextFilter)
+    _ <- pushComment("finish authentication check")
   } yield token
 
+  def transformFailureUsingFunction(computation: CombinedStateAndFailure[String])(fn: EarlyReturn => EarlyReturn): CombinedStateAndFailure[String] = {
+    transformFailureUsingComputation(computation)(computation.leftMap(fn))
+  }
+
+  def transformFailureUsingComputation(computation: CombinedStateAndFailure[String])(fn: CombinedStateAndFailure[String]): CombinedStateAndFailure[String] = for {
+    success <- computation.isRight.liftState
+    result <- success match {
+      case true  => computation
+      case false => fn
+    }
+  } yield result
 }
 
 class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
@@ -95,15 +109,26 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   import com.seattleglassware.Misc._
   import com.seattleglassware.GlasswareTypes._
 
+  def startOAuth2Dance = for {
+    _ <- pushComment("starting OAuth2 dance").liftState
+    flow <- newAuthorizationCodeFlow.liftState
+    redirectUrl <- getGenericUrlWithNewPath("/oauth2callback")
+    authorizationCodeRequestUrl <- flow.newAuthorizationUrl()
+      .setRedirectUri(redirectUrl.toString)
+      .set("approval_prompt", "force")
+      .catchExceptionsT("failed to create new authorization url")
+
+    _ <- ExecuteRedirect(authorizationCodeRequestUrl, "finished oauth dance").liftState
+  } yield ()
+
   def finishOAuth2Dance(code: String) = for {
     _ <- pushComment("finishing OAuth2 dance").liftState
 
-    redirectUri <- getGenericUrl.liftState
     flow <- newAuthorizationCodeFlow.liftState
-    url <- getGenericUrl.map(_.newRawPath("/oauth2callback").toString)
+    url <- getGenericUrlWithNewPath("/oauth2callback")
 
     tokenResponse <- flow.newTokenRequest(code)
-      .setRedirectUri(url)
+      .setRedirectUri(url.toString)
       .execute
       .catchExceptionsT("newTokenRequest failed")
 
@@ -113,7 +138,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .getUserId
       .catchExceptionsT("extracting userid from google token response failed")
 
-    _ <- pushCommentT("Code exchange worked. User " + userId + " logged in.")
+    _ <- pushComment("Code exchange worked. User " + userId + " logged in.")
 
     _ <- setUserId(userId).liftState
 
@@ -122,8 +147,10 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
 
     _ <- bootstrapNewUser(userId)
 
-    destination <- setRedirectLocation("/", "finished oauth2 dance")
-  } yield "finishOAuth2Dance"
+    destination <- getGenericUrlWithNewPath("/")
+
+    _ <- ExecuteRedirect(destination, "finished oauth2 dance").liftState
+  } yield ()
 
   def bootstrapNewUser(userId: String) = for {
     _ <- pushComment("bootstrapping new user").liftState
@@ -153,20 +180,19 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .liftState
   } yield subscription
 
-  def startOAuth2Dance = for {
-    _ <- pushComment("starting OAuth2 dance").liftState
-  } yield "startOAuth2Dance"
-
   def authServletAction = for {
     _ <- ifAll(
       predicates = List(parameterExists("error")),
-      trueEffects = req => List(Comment("error parameter exists"), SetResponseContentType("text/plain"), WriteText("\"Something went wrong during auth. Please check your log for details\"")),
+      trueEffects = req => List(
+        Comment("error parameter exists"),
+        SetResponseContentType("text/plain"),
+        WriteText("\"Something went wrong during auth. Please check your log for details\"")),
       trueResult = FailedCondition("The error parameter is set").left,
       falseResult = ().right)
 
     code <- getOptionalParameter("code")
 
-    result <- code.fold(startOAuth2Dance)(c => finishOAuth2Dance(c))
+    result <- code.fold(startOAuth2Dance)(finishOAuth2Dance(_))
   } yield result
 }
 

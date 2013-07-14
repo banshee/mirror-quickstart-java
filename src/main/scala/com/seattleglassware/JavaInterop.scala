@@ -13,7 +13,7 @@ object JavaInterop {
     } catch {
       case t: Throwable => threwException(t)
     }
-
+    
   def asInstanceOfNotNull[T](x: AnyRef) = x match {
     case null => throw new NullPointerException
     case x    => x.asInstanceOf[T]

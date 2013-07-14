@@ -93,11 +93,8 @@ class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
     val r = new TestHttpRequestWrapper("http://example.com/fnord")
     val (GlasswareState(_, effects), result) = a.authenticationCheck.run(new GlasswareState(r))
     cond(result) {
-      case -\/(ExecuteRedirect(_)) => true
+      case -\/(ExecuteRedirect(_, _)) => true
     } should be === (true)
-    cond(effects) {
-      case SetRedirectTo(_, _) :: t => true
-    } should be === true
   }
 }
 
