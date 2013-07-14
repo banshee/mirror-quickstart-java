@@ -55,10 +55,16 @@ object Misc {
       result.setScheme(scheme)
       result
     }
+
     def newRawPath(p: String) = {
       val result = u.clone
       result.setRawPath(p)
       result
+    }
+
+    def notNullPathParts = {
+      val pathParts = Option(u.getPathParts) map { _.asScala.toList }
+      (pathParts | List.empty) filter { s => s != null && s.length > 0 }
     }
   }
 }
@@ -112,6 +118,7 @@ trait FilterScaffold[T] { self: ServerPlumbing with Filter =>
   import stateTypes._
 
   val filterImplementation: CombinedStateAndFailure[T]
+
   override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
     doFilterPlumbing(req, resp, chain, filterImplementation)
 }

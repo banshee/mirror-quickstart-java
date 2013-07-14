@@ -68,13 +68,12 @@ object GlasswareTypes {
   case class FinishedProcessing(explanation: String) extends EarlyReturn
   case class NoAuthenticationToken(reason: EarlyReturn) extends EarlyReturn
   case class ExecuteRedirect(destination: GenericUrl, reason: String) extends EarlyReturn
+  case object YieldToNextFilter extends EarlyReturn
   case object PlaceholderReturn extends EarlyReturn
 
   sealed abstract class Effect
   case class SetResponseContentType(value: String) extends Effect
   case class CopyStreamToOutput(fromStream: InputStream) extends Effect
-  case class SetRedirectTo(u: GenericUrl, explanation: String) extends Effect
-  case object YieldToNextFilter extends Effect
   case object PlaceholderEffect extends Effect
   case class Comment(s: String) extends Effect
   case class WriteText(s: String) extends Effect
@@ -161,22 +160,17 @@ trait StatefulParameterOperations extends Injectable {
   import com.seattleglassware.Misc.GenericUrlWithNewScheme
   import com.seattleglassware.GlasswareTypes.stateTypes._
 
-  def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = ifAll(
-    predicates = List(urlPathMatches(fn)),
-    trueEffects = _ => List(YieldToNextFilter),
-    trueResult = FinishedProcessing(explanation).left,
-    falseResult = ().right)
+  def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = for {
+    pathMatches <- urlPathMatches(fn, explanation)
+    redirect <- if (pathMatches) YieldToNextFilter.liftState else noOp
+  } yield 1
 
-  def redirectToHttps(req: HttpRequestWrapper) = List(SetRedirectTo(req.getRequestGenericUrl.newScheme("https"), "https required"))
+  def noOp = ().liftState
 
-  def pushRedirectToUrl(url: GenericUrl, reason: String) =
-    pushEffect(SetRedirectTo(url, reason))
-
-  def pushRedirectToPath(path: String, reason: String) = for {
+  def redirectToHttps = for {
     url <- getGenericUrl
-    urlWithNewPath = url.newRawPath(path)
-    _ <- pushRedirectToUrl(urlWithNewPath, reason)
-  } yield url
+    r <- ExecuteRedirect(url.newScheme("https"), "redirecting to https").liftState
+  } yield ()
 
   def ifAll[T, U](
     predicates: Seq[Function[HttpRequestWrapper, Boolean]],
@@ -202,13 +196,15 @@ trait StatefulParameterOperations extends Injectable {
   def urlSchemeIs(scheme: HttpRequestWrapper.HttpRequestType)(req: HttpRequestWrapper) =
     req.scheme == scheme
 
-  def hostnameMatches(fn: String => Boolean)(req: HttpRequestWrapper) =
-    fn(req.getHostname)
+  def hostnameMatches(fn: String => Boolean) = urlComponentMatches(_.getHost)(fn(_), "failed to match hostname")
 
-  def urlPathMatches(fn: PartialFunction[List[String], Boolean])(req: HttpRequestWrapper) = {
-    val items = req.getRequestGenericUrl.getPathParts.asScala.filter { s => s != null && s.length > 0 }.toList
-    fn.lift(items) | false
-  }
+  def urlComponentMatches[T](extractor: GenericUrl => T)(fn: T => Boolean, failureExplanation: String) = for {
+    url <- getGenericUrl
+    item <- extractor(url).catchExceptionsT(failureExplanation)
+  } yield fn(item)
+
+  def urlPathMatches(fn: List[String] => Boolean, explanation: String) =
+    urlComponentMatches(_.notNullPathParts)(fn(_), explanation)
 
   def parameterMatches(parameterName: String, fn: String => Boolean)(req: HttpRequestWrapper) =
     req.getRequestGenericUrl.getAll(parameterName).asScala.map(_.toString).find(fn).isDefined
@@ -334,21 +330,25 @@ trait ServerPlumbing extends StatefulParameterOperations {
     val (state, result) = s.run(GlasswareState(req))
     val effects = effectsThroughGlasswareState.get(state)
     executeEffects(effects, req, resp, None, result)
+    executeResult(result, req, resp, None)
   }
 
-  def doFilterPlumbing[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit =
+  def doFilterPlumbing[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
     (req, resp) match {
       case (req: HttpServletRequest, resp: HttpServletResponse) => doHttpFilter(req, resp, chain, s)
       case _ => ()
     }
-
+  }
   private[this] def doHttpFilter[T](req: HttpServletRequest, resp: HttpServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
     val (GlasswareState(_, effects), result) = s.run(GlasswareState(req))
     executeEffects(effects, req, resp, chain.some, result)
+    executeResult(result, req, resp, chain.some)
   }
 
-  val isRedirectLocation: Effect =?> GenericUrl = {
-    case SetRedirectTo(x, _) => x
+  def executeResult[T](result: EarlyReturn \/ T, req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain]) = result match {
+    case -\/(ExecuteRedirect(url, _)) => resp.sendRedirect(url.toString)
+    case -\/(YieldToNextFilter)       => chain.get.doFilter(req, resp)
+    case _                            => ()
   }
 
   def executeEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], result: EarlyReturn \/ T) = {
@@ -363,9 +363,18 @@ trait ServerPlumbing extends StatefulParameterOperations {
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
-    case YieldToNextFilter                => chain.get.doFilter(req, resp)
     case WriteText(s)                     => throw new RuntimeException("WriteText not yet implemented")
     case SetSessionAttribute(name, value) => throw new RuntimeException("SetSessionAttribute not yet implemented")
     case Comment(_) | PlaceholderEffect   => // Do nothing
+  }
+
+  import scala.language.higherKinds
+
+  def leftMap[F[+_], A, B](x: => EitherT[F, A, B])(y: A => EitherT[F, A, B])(implicit F: Bind[F]): EitherT[F, A, B] = {
+    val g = x.run
+    EitherT(F.bind(g) {
+      case -\/(l) => y(l).run
+      case \/-(_) => g
+    })
   }
 }

@@ -10,7 +10,6 @@ import GlasswareTypes.ExecuteRedirect
 import GlasswareTypes.FailedCondition
 import GlasswareTypes.FinishedProcessing
 import GlasswareTypes.GlasswareState
-import GlasswareTypes.SetRedirectTo
 import GlasswareTypes.WrappedFailure
 import GlasswareTypes.YieldToNextFilter
 import GlasswareTypes.partialMonoidForEarlyReturn
@@ -39,19 +38,27 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
 
   import bindingModule._
 
-  def appspotHttpsCheck = ifAll(
-    predicates = List(hostnameMatches(_.contains("appspot.com")), urlSchemeIs(Http)),
-    trueEffects = redirectToHttps,
-    trueResult = ExecuteRedirect.left,
-    falseResult = ().right)
+  def appspotHttpsCheck = for {
+    hostnameMatches <- hostnameMatches(_.contains("appspot.com"))
+    isInsecure <- urlComponentMatches(_.getScheme)(_ == "http", "failed to get http scheme")
+    redirectRequired <- if (hostnameMatches && isInsecure) redirectToHttps else noOp
+  } yield ()
 
-  def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "Skipping auth check during auth flow")
+  def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "in middle of oauth2 callback" )
+
+  def yieldWithComment(s: String) = for {
+    _ <- pushComment("yielding to next filter").liftState
+    _ <- pushComment(s).liftState
+    _ <- YieldToNextFilter.liftState
+  } yield ()
+
+  def yieldToNextFilterIfFirstElementOfPathMatches(s: String, explanation: String) = for {
+    pathStartsWithNotify <- urlPathMatches(_.head == s, "failed to get path")
+    _ <- if (pathStartsWithNotify) yieldWithComment(explanation) else noOp
+  } yield ()
+
+  // yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "Skipping auth check during auth flow")
   def isRobotCheck = yieldToNextFilterIfFirstElementOfPathMatches("notify", "Skipping auth check for notify servlet")
-
-  def yieldToNextFilterIfFirstElementOfPathMatches(p: String, explanation: String) =
-    yieldToNextFilterIfPathMatches({
-      case h :: t => p == h
-    }, explanation)
 
   def getAccessToken: CombinedStateAndFailure[String] = {
     val tokenFetcher = for {
@@ -78,8 +85,8 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     _ <- middleOfAuthFlowCheck.liftState
     _ <- isRobotCheck.liftState
     token <- getAccessToken
-    _ <- pushEffect(YieldToNextFilter)
-    _ <- pushComment("finish authentication check")
+    _ <- pushComment("finished authentication check")
+    _ <- YieldToNextFilter.liftState
   } yield token
 
   def transformFailureUsingFunction(computation: CombinedStateAndFailure[String])(fn: EarlyReturn => EarlyReturn): CombinedStateAndFailure[String] = {
@@ -125,10 +132,10 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
     _ <- pushComment("finishing OAuth2 dance").liftState
 
     flow <- newAuthorizationCodeFlow.liftState
-    url <- getGenericUrlWithNewPath("/oauth2callback")
+    oauth2callbackUrl <- getGenericUrlWithNewPath("/oauth2callback")
 
     tokenResponse <- flow.newTokenRequest(code)
-      .setRedirectUri(url.toString)
+      .setRedirectUri(oauth2callbackUrl.toString)
       .execute
       .catchExceptionsT("newTokenRequest failed")
 
@@ -196,7 +203,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   } yield result
 }
 
-class AuthServlet extends ServletInjectionShim[String]()(ProjectConfiguration.configuration) {
-  val servletImplementation = (new AuthServletSupport).authServletAction
+class AuthServlet extends ServletInjectionShim[Unit]()(ProjectConfiguration.configuration) {
+  override val implementationOfGet = (new AuthServletSupport).authServletAction
 }
 

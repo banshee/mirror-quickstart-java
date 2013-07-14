@@ -42,7 +42,7 @@ limitations under the License.
 
   <servlet>
     <servlet-name>oauth2callback</servlet-name>
-    <servlet-class>com.google.glassware.AuthServlet</servlet-class>
+    <servlet-class>com.seattleglassware.AuthServlet</servlet-class>
   </servlet>
   <servlet-mapping>
     <servlet-name>oauth2callback</servlet-name>
