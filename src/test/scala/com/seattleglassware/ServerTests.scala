@@ -24,6 +24,7 @@ import scalaz.{ -\/ => -\/ }
 import scalaz.Scalaz._
 import scalaz.State
 import scalaz.{ \/ => \/ }
+import com.escalatesoft.subcut.inject.BindingModule
 
 @RunWith(classOf[JUnitRunner])
 class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
@@ -81,8 +82,6 @@ class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
 @RunWith(classOf[JUnitRunner])
 class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
   test("urlPathMatch should match") {
-    implicit val bindingmodule = TestBindings.configuration
-    val r = new TestHttpRequestWrapper("http://example.com/oauth2callback")
   }
 
   test("AuthFilter should redirect to https if the hostname is appspot") {
@@ -122,6 +121,49 @@ class TestHttpRequestWrapper(url: String = "http://example.com/") extends HttpRe
   def getRequestURI: String = url
 }
 
+class TestStatefulParameterOperations extends FunSuite with ShouldMatchers with MockitoSugar {
+  import stateTypes._
+
+  class TestClassForState(implicit val bindingModule: BindingModule) extends StatefulParameterOperations {
+    def sample1: CombinedStateAndFailure[Int] = for {
+      x <- pushComment("shark").liftState
+      t <- 10.liftState
+//      _ <- redirectToHttps
+    } yield t
+
+    def sample2: CombinedStateAndFailure[Int] = for {
+      _ <- pushComment("bait").liftState
+      _ <- YieldToNextFilter.liftState
+    } yield 2
+
+    val anotherComment = for {
+      _ <- pushComment("fish").liftState
+    } yield 3
+
+    def combinedSamples: CombinedStateAndFailure[Int] = for {
+      _ <- pushComment("asdf").liftState
+      //          t < sample1
+      x <- anotherComment
+    } yield 4
+  }
+
+  test("confirm state operations with just sample1") {
+    import TestBindings.configuration
+    val c = new TestClassForState()
+    val (GlasswareState(_, items), result) = c.sample1.run(TestBindings.defaultEmptyGlasswareState)
+    println(s"-------\nresult: $result\nitems:$items")
+    items should be(List("shark") map Comment)
+  }
+
+//  test("confirm state operations with a combination of sample1 and sample1") {
+//    import TestBindings.configuration
+//    val c = new TestClassForState()
+//    val (GlasswareState(_, items), result) = c.combinedSamples.run(TestBindings.defaultEmptyGlasswareState)
+//    println(s"-------\nresult: $result\nitems:$items")
+//    items should be(List("shark", "bait", "fish") map Comment reverse)
+//  }
+}
+
 @RunWith(classOf[JUnitRunner])
 class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
   test("can run AttachmentProxyServlet") {
@@ -143,7 +185,7 @@ class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
     val (state, result) = a.attachmentProxyAction.run(GlasswareState(new TestHttpRequestWrapper))
     cond(result) {
       case -\/(WrappedFailure(_, _)) => true
-    } should be (true)
+    } should be(true)
   }
 }
 
@@ -170,8 +212,4 @@ object TestBindings {
 
 @RunWith(classOf[JUnitRunner])
 class JavaInteropTests extends FunSuite with ShouldMatchers {
-  test("safelycall returns a correct value when called on a closure returning void") {
-    val result = JavaInterop.safelyCall(println("x"))(_ => 0, 1, _ => 2)
-    result should be(0)
-  }
 }
