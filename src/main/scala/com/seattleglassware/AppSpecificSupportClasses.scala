@@ -140,13 +140,6 @@ trait StatefulParameterOperations extends Injectable {
     parameterValue <- req.getParameter(parameterName).right[EarlyReturn].liftState
   } yield parameterValue
 
-//  def pushEffect(e: Effect) =
-//    State[GlasswareState, EarlyReturn \/ Unit] {
-//      case s =>
-//        val newstate = effectsThroughGlasswareState.mod(effects => e :: effects, s)
-//        (newstate, ().right)
-//    }.liftState
-
   def pushEffect(e: Effect): CombinedStateAndFailure[Unit] = for {
      GlasswareState(req, items) <- get[GlasswareState].liftState
      _ <- put(GlasswareState(req, e :: items)).liftState

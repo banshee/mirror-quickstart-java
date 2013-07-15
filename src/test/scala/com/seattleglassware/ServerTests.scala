@@ -125,43 +125,36 @@ class TestStatefulParameterOperations extends FunSuite with ShouldMatchers with 
   import stateTypes._
 
   class TestClassForState(implicit val bindingModule: BindingModule) extends StatefulParameterOperations {
-    def sample1: CombinedStateAndFailure[Int] = for {
+    def failingShark: CombinedStateAndFailure[Int] = for {
       x <- pushComment("shark")
-      t <- 10.liftState
-//      _ <- redirectToHttps
-    } yield t
+      _ <- FailedCondition("something").liftState
+    } yield 1
 
-    def sample2: CombinedStateAndFailure[Int] = for {
-      _ <- pushComment("bait").liftState
-      _ <- YieldToNextFilter.liftState
+    def succeedingShark: CombinedStateAndFailure[Int] = for {
+      x <- pushComment("shark")
     } yield 2
 
-    val anotherComment = for {
-      _ <- pushComment("fish").liftState
+    def failThenSucceed = for {
+      a <- failingShark
+      b <- succeedingShark
     } yield 3
+    
+    def succeedingBait: CombinedStateAndFailure[Int] = for {
+      _ <- pushComment("bait")
+    } yield 2
 
-    def combinedSamples: CombinedStateAndFailure[Int] = for {
-      _ <- pushComment("asdf").liftState
-      //          t < sample1
-      x <- anotherComment
-    } yield 4
+    def failingBait: CombinedStateAndFailure[Int] = for {
+      _ <- pushComment("bait")
+      _ <- YieldToNextFilter.liftState
+    } yield 2
   }
 
-  test("confirm state operations with just sample1") {
-    import TestBindings.configuration
-    val c = new TestClassForState()
-    val (GlasswareState(_, items), result) = c.sample1.run(TestBindings.defaultEmptyGlasswareState)
-    println(s"-------\nresult: $result\nitems:$items")
+  test("fail followed by succeed sets state correctly") {
+    val tc = new TestClassForState()(TestBindings.configuration)
+    val (GlasswareState(_, items), result) = tc.failThenSucceed.run(TestBindings.defaultEmptyGlasswareState)
     items should be(List("shark") map Comment)
   }
-
-//  test("confirm state operations with a combination of sample1 and sample1") {
-//    import TestBindings.configuration
-//    val c = new TestClassForState()
-//    val (GlasswareState(_, items), result) = c.combinedSamples.run(TestBindings.defaultEmptyGlasswareState)
-//    println(s"-------\nresult: $result\nitems:$items")
-//    items should be(List("shark", "bait", "fish") map Comment reverse)
-//  }
+  
 }
 
 @RunWith(classOf[JUnitRunner])
