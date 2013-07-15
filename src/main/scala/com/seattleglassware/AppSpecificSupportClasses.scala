@@ -135,18 +135,23 @@ trait StatefulParameterOperations extends Injectable {
         (state, result)
     }
 
-  def getOptionalParameter(parameterName: String) = for {
+  def getOptionalParameter(parameterName: String): CombinedStateAndFailure[Option[String]] = for {
     GlasswareState(req, _) <- get[GlasswareState].liftState
-    parameterValue <- req.getParameter(parameterName).liftState
+    parameterValue <- req.getParameter(parameterName).right[EarlyReturn].liftState
   } yield parameterValue
 
-  def pushEffect(e: Effect) =
-    State[GlasswareState, EarlyReturn \/ Unit] {
-      case s =>
-        val newstate = effectsThroughGlasswareState.mod(effects => e :: effects, s)
-        (newstate, ().right)
-    }.liftState
+//  def pushEffect(e: Effect) =
+//    State[GlasswareState, EarlyReturn \/ Unit] {
+//      case s =>
+//        val newstate = effectsThroughGlasswareState.mod(effects => e :: effects, s)
+//        (newstate, ().right)
+//    }.liftState
 
+  def pushEffect(e: Effect): CombinedStateAndFailure[Unit] = for {
+     GlasswareState(req, items) <- get[GlasswareState].liftState
+     _ <- put(GlasswareState(req, e :: items)).liftState
+  } yield 1
+  
   def pushComment(s: String) = pushEffect(Comment(s))
 
   def getUserId = getSessionAttribute[String]("userId")

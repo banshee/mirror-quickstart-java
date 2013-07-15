@@ -126,7 +126,7 @@ class TestStatefulParameterOperations extends FunSuite with ShouldMatchers with 
 
   class TestClassForState(implicit val bindingModule: BindingModule) extends StatefulParameterOperations {
     def sample1: CombinedStateAndFailure[Int] = for {
-      x <- pushComment("shark").liftState
+      x <- pushComment("shark")
       t <- 10.liftState
 //      _ <- redirectToHttps
     } yield t

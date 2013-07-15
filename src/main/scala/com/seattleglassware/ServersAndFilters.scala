@@ -47,8 +47,8 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "in middle of oauth2 callback" )
 
   def yieldWithComment(s: String) = for {
-    _ <- pushComment("yielding to next filter").liftState
-    _ <- pushComment(s).liftState
+    _ <- pushComment("yielding to next filter")
+    _ <- pushComment(s)
     _ <- YieldToNextFilter.liftState
   } yield ()
 
@@ -80,10 +80,10 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   }
 
   def authenticationCheck: CombinedStateAndFailure[String] = for {
-    _ <- pushComment("start authentication check").liftState
-    _ <- appspotHttpsCheck.liftState
-    _ <- middleOfAuthFlowCheck.liftState
-    _ <- isRobotCheck.liftState
+    _ <- pushComment("start authentication check")
+    _ <- appspotHttpsCheck
+    _ <- middleOfAuthFlowCheck
+    _ <- isRobotCheck
     token <- getAccessToken
     _ <- pushComment("finished authentication check")
     _ <- YieldToNextFilter.liftState
@@ -117,7 +117,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   import com.seattleglassware.GlasswareTypes._
 
   def startOAuth2Dance = for {
-    _ <- pushComment("starting OAuth2 dance").liftState
+    _ <- pushComment("starting OAuth2 dance")
     flow <- newAuthorizationCodeFlow.liftState
     redirectUrl <- getGenericUrlWithNewPath("/oauth2callback")
     authorizationCodeRequestUrl <- flow.newAuthorizationUrl()
@@ -129,7 +129,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   } yield ()
 
   def finishOAuth2Dance(code: String) = for {
-    _ <- pushComment("finishing OAuth2 dance").liftState
+    _ <- pushComment("finishing OAuth2 dance")
 
     flow <- newAuthorizationCodeFlow.liftState
     oauth2callbackUrl <- getGenericUrlWithNewPath("/oauth2callback")
@@ -160,7 +160,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   } yield ()
 
   def bootstrapNewUser(userId: String) = for {
-    _ <- pushComment("bootstrapping new user").liftState
+    _ <- pushComment("bootstrapping new user")
 
     credential <- getCredential(userId).liftState
 
