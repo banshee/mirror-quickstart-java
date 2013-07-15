@@ -141,10 +141,10 @@ trait StatefulParameterOperations extends Injectable {
   } yield parameterValue
 
   def pushEffect(e: Effect): CombinedStateAndFailure[Unit] = for {
-     GlasswareState(req, items) <- get[GlasswareState].liftState
-     _ <- put(GlasswareState(req, e :: items)).liftState
+    GlasswareState(req, items) <- get[GlasswareState].liftState
+    _ <- put(GlasswareState(req, e :: items)).liftState
   } yield 1
-  
+
   def pushComment(s: String) = pushEffect(Comment(s))
 
   def getUserId = getSessionAttribute[String]("userId")
@@ -244,9 +244,7 @@ trait StatefulParameterOperations extends Injectable {
       .catchExceptions()
   } yield deleted
 
-  def setUserId(uid: String) = for {
-    _ <- pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
-  } yield uid
+  def setUserId(uid: String) = pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
 
   def getAttachmentInputStream(credential: Credential, timelineItemId: String, attachmentId: String) = for {
     mirror <- getMirror(credential)
@@ -314,6 +312,16 @@ trait StatefulParameterOperations extends Injectable {
     } catch {
       case t: Throwable => threwException(t)
     }
+
+  import scala.language.higherKinds
+
+  def transformLeft[F[+_], A, B](x: => EitherT[F, A, B])(y: A => EitherT[F, A, B])(implicit F: Bind[F]): EitherT[F, A, B] = {
+    val g = x.run
+    EitherT(F.bind(g) {
+      case -\/(l) => y(l).run
+      case \/-(_) => g
+    })
+  }
 }
 
 object SessionAttributes {
@@ -361,18 +369,9 @@ trait ServerPlumbing extends StatefulParameterOperations {
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
-    case WriteText(s)                     => throw new RuntimeException("WriteText not yet implemented")
-    case SetSessionAttribute(name, value) => throw new RuntimeException("SetSessionAttribute not yet implemented")
-    case Comment(_) | PlaceholderEffect   => // Do nothing
-  }
-
-  import scala.language.higherKinds
-
-  def leftMap[F[+_], A, B](x: => EitherT[F, A, B])(y: A => EitherT[F, A, B])(implicit F: Bind[F]): EitherT[F, A, B] = {
-    val g = x.run
-    EitherT(F.bind(g) {
-      case -\/(l) => y(l).run
-      case \/-(_) => g
-    })
+    case WriteText(s) => throw new RuntimeException("WriteText not yet implemented")
+    case SetSessionAttribute(name, value) =>
+      val session = Option(req.getSession) map { _.setAttribute(name, value) }
+    case Comment(_) | PlaceholderEffect => // Do nothing
   }
 }

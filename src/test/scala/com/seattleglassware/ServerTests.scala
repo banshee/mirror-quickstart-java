@@ -138,10 +138,14 @@ class TestStatefulParameterOperations extends FunSuite with ShouldMatchers with 
       a <- failingShark
       b <- succeedingShark
     } yield 3
-    
+
     def succeedingBait: CombinedStateAndFailure[Int] = for {
       _ <- pushComment("bait")
     } yield 2
+
+    def transformingSharkToBait = for {
+      x <- transformLeft(failingShark)(x => succeedingBait)
+    } yield x
 
     def failingBait: CombinedStateAndFailure[Int] = for {
       _ <- pushComment("bait")
@@ -153,8 +157,28 @@ class TestStatefulParameterOperations extends FunSuite with ShouldMatchers with 
     val tc = new TestClassForState()(TestBindings.configuration)
     val (GlasswareState(_, items), result) = tc.failThenSucceed.run(TestBindings.defaultEmptyGlasswareState)
     items should be(List("shark") map Comment)
+    cond(result) {
+      case -\/(FailedCondition("something")) => true
+    } should be(true)
+  }
+
+  test("fail followed by a transform sets state correctly") {
+    val tc = new TestClassForState()(TestBindings.configuration)
+    val (GlasswareState(_, items), result) = tc.transformingSharkToBait.run(TestBindings.defaultEmptyGlasswareState)
+    items should be(List("bait", "shark") map Comment)
+    cond(result) {
+      case \/-(2) => true
+    } should be(true)
   }
   
+  test("can set user id") {
+    val tc = new TestClassForState()(TestBindings.configuration)
+    val (GlasswareState(_, items), result) = tc.setUserId("myuid").run(TestBindings.defaultEmptyGlasswareState)
+    items should be(List("bait", "shark") map Comment)
+    cond(result) {
+      case \/-(_) => true
+    } should be(true)
+  }
 }
 
 @RunWith(classOf[JUnitRunner])

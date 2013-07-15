@@ -32,6 +32,7 @@ import com.google.api.services.mirror.model.Contact
 import com.google.glassware.MainServlet
 import com.google.api.services.mirror.model.TimelineItem
 import com.google.api.services.mirror.model.NotificationConfig
+import scala.PartialFunction._
 
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import com.seattleglassware.GlasswareTypes.stateTypes._
@@ -44,7 +45,7 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     redirectRequired <- if (hostnameMatches && isInsecure) redirectToHttps else noOp
   } yield ()
 
-  def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "in middle of oauth2 callback" )
+  def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "in middle of oauth2 callback")
 
   def yieldWithComment(s: String) = for {
     _ <- pushComment("yielding to next filter")
@@ -53,11 +54,10 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   } yield ()
 
   def yieldToNextFilterIfFirstElementOfPathMatches(s: String, explanation: String) = for {
-    pathStartsWithNotify <- urlPathMatches(_.head == s, "failed to get path")
+    pathStartsWithNotify <- urlPathMatches(cond(_) { case h :: t if h == s => true }, "failed to get path")
     _ <- if (pathStartsWithNotify) yieldWithComment(explanation) else noOp
   } yield ()
 
-  // yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "Skipping auth check during auth flow")
   def isRobotCheck = yieldToNextFilterIfFirstElementOfPathMatches("notify", "Skipping auth check for notify servlet")
 
   def getAccessToken: CombinedStateAndFailure[String] = {
@@ -80,7 +80,7 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   }
 
   def authenticationCheck: CombinedStateAndFailure[String] = for {
-    _ <- pushComment("start authentication check")
+    _ <- pushComment("start AuthFilter authentication check")
     _ <- appspotHttpsCheck
     _ <- middleOfAuthFlowCheck
     _ <- isRobotCheck
@@ -88,18 +88,6 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     _ <- pushComment("finished authentication check")
     _ <- YieldToNextFilter.liftState
   } yield token
-
-  def transformFailureUsingFunction(computation: CombinedStateAndFailure[String])(fn: EarlyReturn => EarlyReturn): CombinedStateAndFailure[String] = {
-    transformFailureUsingComputation(computation)(computation.leftMap(fn))
-  }
-
-  def transformFailureUsingComputation(computation: CombinedStateAndFailure[String])(fn: CombinedStateAndFailure[String]): CombinedStateAndFailure[String] = for {
-    success <- computation.isRight.liftState
-    result <- success match {
-      case true  => computation
-      case false => fn
-    }
-  } yield result
 }
 
 class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
@@ -125,7 +113,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .set("approval_prompt", "force")
       .catchExceptionsT("failed to create new authorization url")
 
-    _ <- ExecuteRedirect(authorizationCodeRequestUrl, "finished oauth dance").liftState
+    _ <- ExecuteRedirect(authorizationCodeRequestUrl, "continuing oauth2 dance by redirecting to the remote auth url").liftState
   } yield ()
 
   def finishOAuth2Dance(code: String) = for {
@@ -147,10 +135,13 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
 
     _ <- pushComment("Code exchange worked. User " + userId + " logged in.")
 
-    _ <- setUserId(userId).liftState
+    _ <- setUserId(userId)
 
     _ <- flow.createAndStoreCredential(tokenResponse, userId)
       .catchExceptionsT("createAndStoreCredential failed")
+
+    state <- get[GlasswareState].liftState
+    _ = println(s"current state is $state")
 
     _ <- bootstrapNewUser(userId)
 
