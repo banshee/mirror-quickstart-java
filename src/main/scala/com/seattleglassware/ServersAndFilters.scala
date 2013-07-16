@@ -33,6 +33,11 @@ import com.google.api.services.mirror.model.TimelineItem
 import com.google.api.services.mirror.model.NotificationConfig
 import scala.PartialFunction._
 import com.google.glassware.MainServlet
+import com.seattleglassware.GlasswareTypes.stateTypes._
+
+import HttpRequestWrapper._
+import com.seattleglassware.Misc._
+import com.seattleglassware.GlasswareTypes._
 
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import com.seattleglassware.GlasswareTypes.stateTypes._
@@ -97,12 +102,8 @@ class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuratio
 // ----- 
 
 class AuthServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import com.seattleglassware.GlasswareTypes.stateTypes._
-
-  import bindingModule._
-  import HttpRequestWrapper._
-  import com.seattleglassware.Misc._
-  import com.seattleglassware.GlasswareTypes._
+  val mirrorOps = inject[MirrorOps]
+  import mirrorOps._
 
   def startOAuth2Dance = for {
     _ <- pushComment("starting OAuth2 dance")
@@ -199,6 +200,9 @@ class AuthServlet extends ServletInjectionShim[Unit]()(ProjectConfiguration.conf
 }
 
 class MainServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+  val mirrorOps = inject[MirrorOps]
+  import mirrorOps._
+
   def mainservletAction = for {
     operation <- getParameter("operation")
     _ <- pushComment(s"executing operation $operation")
@@ -216,7 +220,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     _ <- insertSubscription(credential, callbackUrl.toString, userId, collection)
       .catchExceptionsT("Could not subscribe $callbackUrl $collection")
   } yield collection
-  
+
   def mainDeleteSubscription = for {
     userId <- getUserId
     credential <- getCredential(userId)

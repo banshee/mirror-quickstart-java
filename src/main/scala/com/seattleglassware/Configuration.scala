@@ -9,6 +9,7 @@ import java.util.Properties
 import com.google.api.client.auth.oauth2.CredentialStore
 import com.google.glassware.ListableAppEngineCredentialStore
 import com.google.api.client.auth.oauth2.Credential.AccessMethod
+import com.seattleglassware.MirrorOps
 
 object BindingIdentifiers {
   object OAuthPropertiesFileLocation extends BindingId
@@ -37,5 +38,7 @@ object UniversalBindings {
     bind[String] idBy GlassScope toSingle "https://www.googleapis.com/auth/glass.timeline " +
       "https://www.googleapis.com/auth/glass.location " +
       "https://www.googleapis.com/auth/userinfo.profile"
+    bind[MirrorOps] toSingle (new MirrorOps()(module))
   }
 }
+

@@ -45,6 +45,9 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
   import stateTypes._
   import bindingModule._
 
+  val mirrorOps = inject[MirrorOps]
+  import mirrorOps._
+  
   def attachmentProxyAction: CombinedStateAndFailure[(String, String)] = for {
     attachmentId <- getParameter("attachment")
     timelineItemId <- getParameter("timelineItem")
