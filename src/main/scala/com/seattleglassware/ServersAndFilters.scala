@@ -29,10 +29,10 @@ import com.google.api.client.googleapis.auth.oauth2.GoogleTokenResponse
 import com.google.api.client.auth.oauth2.TokenResponse
 import com.google.glassware.NewUserBootstrapper
 import com.google.api.services.mirror.model.Contact
-import com.google.glassware.MainServlet
 import com.google.api.services.mirror.model.TimelineItem
 import com.google.api.services.mirror.model.NotificationConfig
 import scala.PartialFunction._
+import com.google.glassware.MainServlet
 
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import com.seattleglassware.GlasswareTypes.stateTypes._
@@ -62,8 +62,8 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
 
   def getAccessToken: CombinedStateAndFailure[String] = {
     val tokenFetcher = for {
-      userId <- getUserId.liftState
-      credential <- getCredential(userId).liftState
+      userId <- getUserId
+      credential <- getCredential(userId)
       accessToken <- safelyCall(credential.getAccessToken)(
         returnedValid = _.right[EarlyReturn],
         returnedNull = FailedCondition("no access token").left,
@@ -79,15 +79,15 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     } yield result
   }
 
-  def authenticationCheck: CombinedStateAndFailure[String] = for {
+  def authenticationCheck = for {
     _ <- pushComment("start AuthFilter authentication check")
     _ <- appspotHttpsCheck
     _ <- middleOfAuthFlowCheck
     _ <- isRobotCheck
-    token <- getAccessToken
+    _ <- getAccessToken
     _ <- pushComment("finished authentication check")
     _ <- YieldToNextFilter.liftState
-  } yield token
+  } yield ""
 }
 
 class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
@@ -153,7 +153,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   def bootstrapNewUser(userId: String) = for {
     _ <- pushComment("bootstrapping new user")
 
-    credential <- getCredential(userId).liftState
+    credential <- getCredential(userId)
 
     catUrl <- getGenericUrl
     imageUrls = List(catUrl.newRawPath("/static/images/chipotle-tube-640x360.jpg"))
@@ -198,3 +198,33 @@ class AuthServlet extends ServletInjectionShim[Unit]()(ProjectConfiguration.conf
   override val implementationOfGet = (new AuthServletSupport).authServletAction
 }
 
+class MainServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+  def mainservletAction = for {
+    operation <- getParameter("operation")
+    _ <- pushComment(s"executing operation $operation")
+    _ <- operation match {
+      case "insertSubscription" => mainInsertSubscription
+      case _                    => noOp
+    }
+  } yield ()
+
+  def mainInsertSubscription = for {
+    userId <- getUserId
+    credential <- getCredential(userId)
+    collection <- getParameter("collection")
+    callbackUrl <- getGenericUrlWithNewPath("/notify")
+    _ <- insertSubscription(credential, callbackUrl.toString, userId, collection)
+      .catchExceptionsT("Could not subscribe $callbackUrl $collection")
+  } yield collection
+  
+  def mainDeleteSubscription = for {
+    userId <- getUserId
+    credential <- getCredential(userId)
+    subscriptionId <- getParameter("subscriptionId")
+    _ <- deleteSubscription(credential, subscriptionId)
+  } yield subscriptionId
+}
+
+class MainServlet extends ServletInjectionShim[Unit]()(ProjectConfiguration.configuration) {
+  override val implementationOfPost = (new MainServletSupport).mainservletAction
+}

@@ -46,14 +46,14 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
   import bindingModule._
 
   def attachmentProxyAction: CombinedStateAndFailure[(String, String)] = for {
-    attachmentId <- getParameter("attachment").liftState
-    timelineItemId <- getParameter("timelineItem").liftState
+    attachmentId <- getParameter("attachment")
+    timelineItemId <- getParameter("timelineItem")
     
-    userid <- getUserId.liftState
-    credential <- getCredential(userid).liftState
-    mirror <- getMirror(credential).liftState
-    contentType <- getAttachmentContentType(mirror, timelineItemId, attachmentId).liftState
-    attachmentInputStream <- getAttachmentInputStream(credential, timelineItemId, attachmentId).liftState
+    userid <- getUserId
+    credential <- getCredential(userid)
+    mirror <- getMirror(credential)
+    contentType <- getAttachmentContentType(mirror, timelineItemId, attachmentId)
+    attachmentInputStream <- getAttachmentInputStream(credential, timelineItemId, attachmentId)
 
     _ <- pushEffect(SetResponseContentType(contentType))
     _ <- pushEffect(CopyStreamToOutput(attachmentInputStream))

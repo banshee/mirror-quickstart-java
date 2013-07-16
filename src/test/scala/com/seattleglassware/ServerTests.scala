@@ -170,11 +170,11 @@ class TestStatefulParameterOperations extends FunSuite with ShouldMatchers with 
       case \/-(2) => true
     } should be(true)
   }
-  
+
   test("can set user id") {
     val tc = new TestClassForState()(TestBindings.configuration)
     val (GlasswareState(_, items), result) = tc.setUserId("myuid").run(TestBindings.defaultEmptyGlasswareState)
-    items should be(List("bait", "shark") map Comment)
+    items should be(List(SetSessionAttribute("userId", "myuid")))
     cond(result) {
       case \/-(_) => true
     } should be(true)

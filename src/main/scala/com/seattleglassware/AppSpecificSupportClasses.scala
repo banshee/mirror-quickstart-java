@@ -127,32 +127,35 @@ trait StatefulParameterOperations extends Injectable {
   def wrapException[T](t: Throwable) = WrappedFailure(t).left[T]
   def wrapMissingParameter[T](s: String) = NoSuchParameter(s).left[T]
 
-  def getParameter(parameterName: String) =
-    State[GlasswareState, EarlyReturn \/ String] {
-      state =>
-        val parameterValue = requestThroughGlasswareState.get(state).getParameter(parameterName)
-        val result = parameterValue.toRightDisjunction(NoSuchParameter(parameterName))
-        (state, result)
-    }
+  def getParameter(parameterName: String) = for {
+    value <- getOptionalParameter(parameterName)
+    result <- value
+      .get
+      .catchExceptionsT(s"could not get parameter $parameterName")
+  } yield result
 
   def getOptionalParameter(parameterName: String): CombinedStateAndFailure[Option[String]] = for {
-    GlasswareState(req, _) <- get[GlasswareState].liftState
+    GlasswareState(req, _) <- getGlasswareState
     parameterValue <- req.getParameter(parameterName).right[EarlyReturn].liftState
   } yield parameterValue
 
   def pushEffect(e: Effect): CombinedStateAndFailure[Unit] = for {
-    GlasswareState(req, items) <- get[GlasswareState].liftState
+    GlasswareState(req, items) <- getGlasswareState
     _ <- put(GlasswareState(req, e :: items)).liftState
-  } yield 1
+  } yield ()
 
   def pushComment(s: String) = pushEffect(Comment(s))
 
   def getUserId = getSessionAttribute[String]("userId")
 
-  def getSessionAttribute[T](attributeName: String) =
-    State[GlasswareState, EarlyReturn \/ T] {
-      s => (s, requestThroughGlasswareState.get(s).getSessionAttribute[T](attributeName))
-    }
+  def getGlasswareState = for {
+    state <- get[GlasswareState].liftState
+  } yield state
+
+  def getSessionAttribute[T](attributeName: String) = for {
+    GlasswareState(req, items) <- getGlasswareState
+    x <- req.getSessionAttribute[T](attributeName).liftState
+  } yield x
 
   import HttpRequestWrapper._
   import com.seattleglassware.Misc.GenericUrlWithNewScheme
@@ -233,15 +236,16 @@ trait StatefulParameterOperations extends Injectable {
   }
 
   def getCredential(userId: String) = for {
-    authorizationFlow <- newAuthorizationCodeFlow
+    userid <- getUserId
+    authorizationFlow <- newAuthorizationCodeFlow.liftState
     credential <- authorizationFlow.loadCredential(userId).
-      catchExceptions("error locating credential")
+      catchExceptionsT("error locating credential")
   } yield credential
 
   def clearUserId(userId: String) = for {
     credential <- getCredential(userId)
     deleted <- credentialStore.delete(userId, credential)
-      .catchExceptions()
+      .catchExceptionsT("failed to delete credential from store")
   } yield deleted
 
   def setUserId(uid: String) = pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
@@ -250,36 +254,37 @@ trait StatefulParameterOperations extends Injectable {
     mirror <- getMirror(credential)
     attachmentsMetadata <- getAttachmentMetadata(mirror, timelineItemId, attachmentId)
     url <- attachmentsMetadata.getContentUrl
-      .catchExceptions("could not get content url for attachment")
+      .catchExceptionsT("could not get content url for attachment")
     genericUrl <- new GenericUrl(url)
-      .catchExceptions(s"could not build genericUrl from [$url]")
+      .catchExceptionsT(s"could not build genericUrl from [$url]")
     request = mirror.getRequestFactory.buildGetRequest(genericUrl)
     resp <- request.execute
-      .catchExceptions("error fetching a mirror request")
+      .catchExceptionsT("error fetching a mirror request")
     content <- resp.getContent
-      .catchExceptions("error getting the content of an attachment")
+      .catchExceptionsT("error getting the content of an attachment")
   } yield content
 
   def getAttachmentMetadata(mirror: Mirror, timelineItemId: String, attachmentId: String) = {
     for {
       attachments <- mirror.timeline.attachments
-        .catchExceptions("failed to get timeline attachments")
+        .catchExceptionsT("failed to get timeline attachments")
       attachmentsRequest <- attachments.get(timelineItemId, attachmentId)
-        .catchExceptions("error creating attachments request")
+        .catchExceptionsT("error creating attachments request")
       attachmentsMetadata <- attachmentsRequest.execute
-        .catchExceptions("error executing attachments fetch")
+        .catchExceptionsT("error executing attachments fetch")
     } yield attachmentsMetadata
   }
 
-  def getMirror(credential: Credential) =
-    new Mirror.Builder(urlFetchTransport, jacksonFactory, credential)
-      .setApplicationName(applicationName)
-      .build()
-      .right[EarlyReturn]
+  def getMirror(credential: Credential) = for {
+    result <- new Mirror.Builder(urlFetchTransport, jacksonFactory, credential)
+    .setApplicationName(applicationName)
+    .build()
+    .catchExceptionsT("failed to build a mirror object")
+  } yield result
 
-  def getAttachmentContentType(mirror: Mirror, timelineItemId: String, attachmentId: String): EarlyReturn \/ String = for {
+  def getAttachmentContentType(mirror: Mirror, timelineItemId: String, attachmentId: String) = for {
     metadata <- getAttachmentMetadata(mirror, timelineItemId, attachmentId)
-    contentType <- metadata.getContentType.catchExceptions("no content type")
+    contentType <- metadata.getContentType.catchExceptionsT("no content type")
   } yield contentType
 
   def insertContact(credential: Credential, contact: Contact) = {
@@ -294,12 +299,22 @@ trait StatefulParameterOperations extends Injectable {
       .setCollection(collection)
       .setCallbackUrl(callbackUrl)
       .setUserToken(userId)
-      .catchExceptions("failed to build subscription")
+      .catchExceptionsT("failed to build subscription")
     insertedSubscription <- mirror.subscriptions
       .insert(subscription)
       .execute
-      .catchExceptions("failed to insert subscription.")
+      .catchExceptionsT("failed to insert subscription.")
   } yield subscription
+
+  def deleteSubscription(credential: Credential, subscriptionId: String) = for {
+    mirror <- getMirror(credential)
+    subs <- mirror.subscriptions
+      .catchExceptionsT("could not get subscriptions")
+    deleteThunk <- subs.delete(subscriptionId)
+      .catchExceptionsT("could not delete subscription")
+    _ <- deleteThunk.execute
+      .catchExceptionsT("executing delete command failed")
+  } yield ()
 
   def trident[U](x: => U)(returnedValid: U => CombinedStateAndFailure[U],
                           returnedNull: => CombinedStateAndFailure[U],
