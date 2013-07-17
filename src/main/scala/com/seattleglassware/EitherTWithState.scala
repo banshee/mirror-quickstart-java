@@ -4,7 +4,7 @@ import scalaz._
 import scalaz.Scalaz._
 
 object EitherTWithState {
-  case class StateGenerator[StateType, FailureType] {
+  case class StateGenerator[StateType, FailureType]() {
     type StateWithFixedStateType[+A] = State[StateType, A]
     type EitherTWithFailureType[F[+_], A] = EitherT[F, FailureType, A]
     type CombinedStateAndFailure[A] = EitherTWithFailureType[StateWithFixedStateType, A]

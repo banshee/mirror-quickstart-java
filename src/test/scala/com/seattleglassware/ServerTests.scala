@@ -2,20 +2,16 @@ package com.seattleglassware
 
 import scala.PartialFunction.cond
 import scala.util.control.Exception.catching
-
 import org.junit.runner.RunWith
 import org.scalatest.junit.JUnitRunner
 import org.scalatest.FunSuite
-import org.scalatest.matchers.ShouldMatchers
 import org.scalatest.mock.MockitoSugar
-
 import com.escalatesoft.subcut.inject.NewBindingModule.newBindingModule
 import com.escalatesoft.subcut.inject.bindingIdToString
 import com.google.api.client.auth.oauth2.Credential
 import com.google.api.client.auth.oauth2.Credential.AccessMethod
 import com.google.api.client.auth.oauth2.CredentialStore
 import com.google.api.client.auth.oauth2.MemoryCredentialStore
-
 import BindingIdentifiers.OAuthPropertiesFileLocation
 import GlasswareTypes._
 import JavaInterop.safelyCall
@@ -25,9 +21,10 @@ import scalaz.Scalaz._
 import scalaz.State
 import scalaz.{ \/ => \/ }
 import com.escalatesoft.subcut.inject.BindingModule
+import org.scalatest.Matchers
 
 @RunWith(classOf[JUnitRunner])
-class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
+class ServerTests extends FunSuite with Matchers with MockitoSugar {
   test("safelyCall can handle null") {
     val result = safelyCall(returnsNull)(
       returnedValid = identity,
@@ -80,7 +77,7 @@ class ServerTests extends FunSuite with ShouldMatchers with MockitoSugar {
 }
 
 @RunWith(classOf[JUnitRunner])
-class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
+class AuthUtilTests extends FunSuite with Matchers with MockitoSugar {
   test("urlPathMatch should match") {
   }
 
@@ -91,12 +88,12 @@ class AuthUtilTests extends FunSuite with ShouldMatchers with MockitoSugar {
     val (GlasswareState(_, effects), result) = a.authenticationCheck.run(new GlasswareState(r))
     cond(result) {
       case -\/(ExecuteRedirect(_, _)) => true
-    } should be === (true)
+    } should be (true)
   }
 }
 
 @RunWith(classOf[JUnitRunner])
-class AuthServletSupportTest extends FunSuite with ShouldMatchers with MockitoSugar {
+class AuthServletSupportTest extends FunSuite with Matchers with MockitoSugar {
   test("can finish oauth2 dance") {
     // Don't have a good test for this now since it hits google servers
     implicit val tbindings = TestBindings.configurationWithAuthorizedTestUser
@@ -121,7 +118,7 @@ class TestHttpRequestWrapper(url: String = "http://example.com/") extends HttpRe
   def getRequestURI: String = url
 }
 
-class TestStatefulParameterOperations extends FunSuite with ShouldMatchers with MockitoSugar {
+class TestStatefulParameterOperations extends FunSuite with Matchers with MockitoSugar {
   import stateTypes._
 
   class TestClassForState(implicit val bindingModule: BindingModule) extends StatefulParameterOperations {
@@ -182,7 +179,7 @@ class TestStatefulParameterOperations extends FunSuite with ShouldMatchers with 
 }
 
 @RunWith(classOf[JUnitRunner])
-class AttachmentProxyServletTests extends FunSuite with ShouldMatchers {
+class AttachmentProxyServletTests extends FunSuite with Matchers {
   test("can run AttachmentProxyServlet") {
     implicit val testSpecificWithAuthorizedUser = newBindingModule { module =>
       import module._
@@ -228,5 +225,5 @@ object TestBindings {
 }
 
 @RunWith(classOf[JUnitRunner])
-class JavaInteropTests extends FunSuite with ShouldMatchers {
+class JavaInteropTests extends FunSuite with Matchers {
 }
