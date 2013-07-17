@@ -101,7 +101,7 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
     _ <- getAccessToken
     _ <- pushComment("finished authentication check")
     _ <- YieldToNextFilter.liftState
-  } yield ""
+  } yield ()
 }
 
 class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
@@ -204,7 +204,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   } yield result
 }
 
-class AuthServlet extends ServletInjectionShim[Unit]()(ProjectConfiguration.configuration) {
+class AuthServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
   override val implementationOfGet = (new AuthServletSupport).authServletAction
 }
 
@@ -351,6 +351,6 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
   } yield result
 }
 
-class MainServlet extends ServletInjectionShim[Unit]()(ProjectConfiguration.configuration) {
+class MainServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
   override val implementationOfPost = (new MainServletSupport).mainservletAction
 }

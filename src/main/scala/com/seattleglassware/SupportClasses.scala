@@ -86,25 +86,25 @@ trait NonInitializedFilter extends Filter {
   override def init(x: javax.servlet.FilterConfig): Unit = ()
 }
 
-trait FilterScaffold[T] { self: ServerPlumbing with Filter =>
+trait FilterScaffold { self: ServerPlumbing with Filter =>
   import stateTypes._
 
-  val filterImplementation: CombinedStateAndFailure[T]
+  val filterImplementation: CombinedStateAndFailure[Unit]
 
   override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =
     doFilterPlumbing(req, resp, chain, filterImplementation)
 }
 
-trait ServletScaffold[T] extends HttpServlet {
+trait ServletScaffold extends HttpServlet {
   self: ServerPlumbing =>
 
   import stateTypes._
 
-  def defaultImplementation: CombinedStateAndFailure[T] =
+  def defaultImplementation: CombinedStateAndFailure[Unit] =
     throw new RuntimeException("no implementation")
-  def implementationOfGet: CombinedStateAndFailure[T] =
+  def implementationOfGet: CombinedStateAndFailure[Unit] =
     defaultImplementation
-  def implementationOfPost: CombinedStateAndFailure[T] =
+  def implementationOfPost: CombinedStateAndFailure[Unit] =
     defaultImplementation
 
   override def doGet(req: HttpServletRequest, resp: HttpServletResponse) =
@@ -113,5 +113,5 @@ trait ServletScaffold[T] extends HttpServlet {
     doServerPlumbing(req, resp, implementationOfPost)
 }
 
-abstract class FilterInjectionShim[T](implicit val bindingModule: BindingModule) extends Filter with ServerPlumbing with FilterScaffold[String]
-abstract class ServletInjectionShim[T](implicit val bindingModule: BindingModule) extends HttpServlet with ServerPlumbing with ServletScaffold[T]
+abstract class FilterInjectionShim(implicit val bindingModule: BindingModule) extends Filter with ServerPlumbing with FilterScaffold
+abstract class ServletInjectionShim(implicit val bindingModule: BindingModule) extends HttpServlet with ServerPlumbing with ServletScaffold

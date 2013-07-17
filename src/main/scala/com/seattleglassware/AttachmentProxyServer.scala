@@ -48,7 +48,7 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
   val mirrorOps = inject[MirrorOps]
   import mirrorOps._
   
-  def attachmentProxyAction: CombinedStateAndFailure[(String, String)] = for {
+  def attachmentProxyAction = for {
     attachmentId <- getParameter("attachment")
     timelineItemId <- getParameter("timelineItem")
     
@@ -60,9 +60,9 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
 
     _ <- pushEffect(SetResponseContentType(contentType))
     _ <- pushEffect(CopyStreamToOutput(attachmentInputStream))
-  } yield (attachmentId, timelineItemId)
+  } yield ()
 }
 
-class AttachmentProxyServlet extends ServletInjectionShim[(String, String)]()(ProjectConfiguration.configuration) {
+class AttachmentProxyServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
   override val implementationOfGet = (new AttachmentProxyServletSupport).attachmentProxyAction
 }
