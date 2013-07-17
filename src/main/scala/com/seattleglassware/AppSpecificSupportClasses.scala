@@ -237,15 +237,19 @@ trait StatefulParameterOperations extends Injectable {
     }
   }
 
-  def getCredential(userId: String) = for {
-    userid <- getUserId
+  def getCredential = for {
+    userId <- getUserId
+    credential <- getCredentialForSpecifiedUser(userId)
+  } yield credential
+
+  def getCredentialForSpecifiedUser(userId: String) = for {
     authorizationFlow <- newAuthorizationCodeFlow.liftState
     credential <- authorizationFlow.loadCredential(userId).
       catchExceptionsT("error locating credential")
   } yield credential
 
   def clearUserId(userId: String) = for {
-    credential <- getCredential(userId)
+    credential <- getCredential
     deleted <- credentialStore.delete(userId, credential)
       .catchExceptionsT("failed to delete credential from store")
   } yield deleted

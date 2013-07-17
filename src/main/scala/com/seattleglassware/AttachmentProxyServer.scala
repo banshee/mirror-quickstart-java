@@ -53,14 +53,13 @@ class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) e
     timelineItemId <- getParameter("timelineItem")
     
     userid <- getUserId
-    credential <- getCredential(userid)
+    credential <- getCredential
     mirror <- getMirror(credential)
     contentType <- getAttachmentContentType(mirror, timelineItemId, attachmentId)
     attachmentInputStream <- getAttachmentInputStream(credential, timelineItemId, attachmentId)
 
     _ <- pushEffect(SetResponseContentType(contentType))
     _ <- pushEffect(CopyStreamToOutput(attachmentInputStream))
-
   } yield (attachmentId, timelineItemId)
 }
 

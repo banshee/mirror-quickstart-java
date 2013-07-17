@@ -1,5 +1,6 @@
 package com.seattleglassware
 
+import com.google.glassware.AuthUtil
 import scala.collection.JavaConverters._
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
@@ -42,6 +43,10 @@ import java.net.URL
 import com.google.glassware.MirrorClient
 import com.google.api.services.mirror.model.MenuItem
 import com.google.api.services.mirror.model.MenuValue
+import com.google.api.client.googleapis.batch.json.JsonBatchCallback
+import com.google.api.client.googleapis.json.GoogleJsonError
+import com.google.api.client.http.HttpHeaders
+import com.google.api.client.googleapis.batch.BatchRequest
 
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import com.seattleglassware.GlasswareTypes.stateTypes._
@@ -72,7 +77,7 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   def getAccessToken: CombinedStateAndFailure[String] = {
     val tokenFetcher = for {
       userId <- getUserId
-      credential <- getCredential(userId)
+      credential <- getCredential
       accessToken <- safelyCall(credential.getAccessToken)(
         returnedValid = _.right[EarlyReturn],
         returnedNull = FailedCondition("no access token").left,
@@ -158,7 +163,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   def bootstrapNewUser(userId: String) = for {
     _ <- pushComment("bootstrapping new user")
 
-    credential <- getCredential(userId)
+    credential <- getCredential
 
     catUrl <- getGenericUrl
     imageUrls = List(catUrl.newRawPath("/static/images/chipotle-tube-640x360.jpg"))
@@ -206,6 +211,16 @@ class AuthServlet extends ServletInjectionShim[Unit]()(ProjectConfiguration.conf
 class MainServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   val m = inject[MirrorOps]
 
+  class BatchCallback extends JsonBatchCallback[TimelineItem] {
+    override def onSuccess(t, responseHeaders) = {
+
+    }
+
+    override def onFailure(error: GoogleJsonError, responseHeaders: HttpHeaders) = {
+
+    }
+  }
+
   def mainservletAction = for {
     operation <- getParameter("operation")
     _ <- pushComment(s"executing operation $operation")
@@ -237,7 +252,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .setNotification((new NotificationConfig).setLevel("DEFAULT"))
       .catchExceptionsT("could not build timeline item")
     userId <- getUserId
-    credential <- getCredential(userId)
+    credential <- getCredential
     insertedTimelineItem <- MirrorClient.insertTimelineItem(credential, timelineItem)
       .catchExceptionsT("failed to insert timeline item")
     _ <- pushComment("A timeline item with actions has been inserted.")
@@ -255,7 +270,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .catchExceptionsT(s"could not create url from $imageUrlParameter")
     contentTypeParameter <- getOptionalParameter("contentType")
     userId <- getUserId
-    credential <- getCredential(userId)
+    credential <- getCredential
     _ <- (imageUrlParameter, contentTypeParameter) match {
       case (Some(i), Some(c)) =>
         MirrorClient.insertTimelineItem(credential,
@@ -271,7 +286,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
 
   def insertSubscription = for {
     userId <- getUserId
-    credential <- getCredential(userId)
+    credential <- getCredential
     collection <- getParameter("collection")
     callbackUrl <- getGenericUrlWithNewPath("/notify")
     _ <- m.insertSubscription(credential, callbackUrl.toString, userId, collection)
@@ -283,7 +298,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     iconUrl <- getParameter("iconUrl")
     name <- getParameter("name")
     userId <- getUserId
-    credential <- getCredential(userId)
+    credential <- getCredential
     contact <- (new Contact)
       .setId(name)
       .setDisplayName(name)
@@ -295,11 +310,45 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
   } yield 1
 
   def deleteSubscription = for {
-    userId <- getUserId
-    credential <- getCredential(userId)
+    credential <- getCredential
     subscriptionId <- getParameter("subscriptionId")
     _ <- m.deleteSubscription(credential, subscriptionId)
   } yield subscriptionId
+
+  def deleteContact = for {
+    credential <- getCredential
+    id <- getParameter("id")
+    _ <- m.deleteContact(credential, id)
+  } yield ()
+
+  def insertItemAllUsers = for {
+    url <- getGenericUrl
+    _ <- if (url.getHost.contains("glass-java-starter-demo.appspot.com")) FinishedProcessing("This function is disabled on the demo instance").liftState else noOp
+    users = AuthUtil.getAllUserIds.asScala.toList
+    // guard against too many users
+    _ <- if (users.size > 10) FailedCondition("too many users").liftState else noOp
+
+    allUsersItem = (new TimelineItem).setText("Hello Everyone!")
+    batch <- m.getBatch
+    callback = new BatchCallback
+
+    _ <- queueTimelineInsertions(users, allUsersItem, batch, callback)
+  } yield ()
+
+  def queueTimelineInsertions(users: List[String], allUsersItem: TimelineItem, batch: BatchRequest, callback: BatchCallback): CombinedStateAndFailure[String] = for {
+    _ <- pushComment("queueTimelineInsertions")
+    items = users map { u => queueTimelineInsertion(u, allUsersItem, batch, callback).run }
+  } yield "foo"
+
+  def queueTimelineInsertion(userId: String, allUsersItem: TimelineItem, batch: BatchRequest, callback: BatchCallback) = for {
+    credential <- m.getCredentialForSpecifiedUser(userId)
+    mirror <- m.getMirror(credential)
+    result <- mirror
+      .timeline
+      .insert(allUsersItem)
+      .queue(batch, callback)
+      .catchExceptionsT("unable to create batch timeline item")
+  } yield result
 }
 
 class MainServlet extends ServletInjectionShim[Unit]()(ProjectConfiguration.configuration) {
