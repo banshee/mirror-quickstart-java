@@ -34,10 +34,14 @@ import com.google.api.services.mirror.model.NotificationConfig
 import scala.PartialFunction._
 import com.google.glassware.MainServlet
 import com.seattleglassware.GlasswareTypes.stateTypes._
-
 import HttpRequestWrapper._
 import com.seattleglassware.Misc._
 import com.seattleglassware.GlasswareTypes._
+import com.google.api.client.http.GenericUrl
+import java.net.URL
+import com.google.glassware.MirrorClient
+import com.google.api.services.mirror.model.MenuItem
+import com.google.api.services.mirror.model.MenuValue
 
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import com.seattleglassware.GlasswareTypes.stateTypes._
@@ -200,32 +204,101 @@ class AuthServlet extends ServletInjectionShim[Unit]()(ProjectConfiguration.conf
 }
 
 class MainServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  val mirrorOps = inject[MirrorOps]
-  import mirrorOps._
+  val m = inject[MirrorOps]
 
   def mainservletAction = for {
     operation <- getParameter("operation")
     _ <- pushComment(s"executing operation $operation")
     _ <- operation match {
-      case "insertSubscription" => mainInsertSubscription
-      case _                    => noOp
+      case "deleteSubscription"   => deleteSubscription
+      case "insertItem"           => insertItem
+      case "insertItemWithAction" => insertItemWithAction
+      case "insertSubscription"   => insertSubscription
+      case _                      => noOp
     }
   } yield ()
 
-  def mainInsertSubscription = for {
+  def insertItemWithAction = for {
+    timelineItem <- (
+      (new TimelineItem)
+      .setText("Tell me what you had for lunch :)"))
+      .catchExceptionsT("failed to create TimelineItem object")
+    drillImageUrl <- getGenericUrlWithNewPath("/static/images/drill.png")
+    menuValues = List(
+      (new MenuValue)
+        .setIconUrl(drillImageUrl.toString)
+        .setDisplayName("Drill In"))
+    menuItemList = List(
+      (new MenuItem).setAction("REPLY"),
+      (new MenuItem).setAction("READ_ALOUD"),
+      (new MenuItem).setValues(menuValues.asJava).setId("drill").setAction("CUSTOM"))
+    timelineItem <- timelineItem
+      .setMenuItems(menuItemList.asJava)
+      .setNotification((new NotificationConfig).setLevel("DEFAULT"))
+      .catchExceptionsT("could not build timeline item")
+    userId <- getUserId
+    credential <- getCredential(userId)
+    insertedTimelineItem <- MirrorClient.insertTimelineItem(credential, timelineItem)
+      .catchExceptionsT("failed to insert timeline item")
+    _ <- pushComment("A timeline item with actions has been inserted.")
+  } yield insertedTimelineItem
+
+  def insertItem = for {
+    timelineItem <- (new TimelineItem)
+      .catchExceptionsT("failed to create TimelineItem object")
+    message <- getOptionalParameter("message")
+    _ = message foreach { s => timelineItem.setText(s) }
+    _ = timelineItem.setNotification((new NotificationConfig).setLevel("DEFAULT"))
+
+    imageUrlParameter <- getOptionalParameter("imageUrl")
+    convertedUrl <- (imageUrlParameter map { x => new URL(x) })
+      .catchExceptionsT(s"could not create url from $imageUrlParameter")
+    contentTypeParameter <- getOptionalParameter("contentType")
+    userId <- getUserId
+    credential <- getCredential(userId)
+    _ <- (imageUrlParameter, contentTypeParameter) match {
+      case (Some(i), Some(c)) =>
+        MirrorClient.insertTimelineItem(credential,
+          timelineItem,
+          c,
+          (new URL(i)).openStream)
+          .catchExceptionsT("could not insert item into timeline along with an image")
+      case _ =>
+        MirrorClient.insertTimelineItem(credential, timelineItem)
+          .catchExceptionsT("could not insert item into timeline")
+    }
+  } yield userId
+
+  def insertSubscription = for {
     userId <- getUserId
     credential <- getCredential(userId)
     collection <- getParameter("collection")
     callbackUrl <- getGenericUrlWithNewPath("/notify")
-    _ <- insertSubscription(credential, callbackUrl.toString, userId, collection)
+    _ <- m.insertSubscription(credential, callbackUrl.toString, userId, collection)
       .catchExceptionsT("Could not subscribe $callbackUrl $collection")
   } yield collection
 
-  def mainDeleteSubscription = for {
+  def insertContact = for {
+    _ <- pushComment("Inserting contact Item")
+    iconUrl <- getParameter("iconUrl")
+    name <- getParameter("name")
+    userId <- getUserId
+    credential <- getCredential(userId)
+    contact <- (new Contact)
+      .setId(name)
+      .setDisplayName(name)
+      .setImageUrls(List(iconUrl).asJava)
+      .catchExceptionsT("could not build contact")
+    _ <- MirrorClient.insertContact(credential, contact)
+      .catchExceptionsT("could not insert contact")
+    _ <- pushComment(s"Inserted contact: $name")
+  } yield 1
+
+  def deleteSubscription = for {
     userId <- getUserId
     credential <- getCredential(userId)
     subscriptionId <- getParameter("subscriptionId")
-    _ <- deleteSubscription(credential, subscriptionId)
+    _ <- m.deleteSubscription(credential, subscriptionId)
   } yield subscriptionId
 }
 

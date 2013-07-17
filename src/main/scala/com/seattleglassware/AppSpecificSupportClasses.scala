@@ -139,10 +139,11 @@ trait StatefulParameterOperations extends Injectable {
     parameterValue <- req.getParameter(parameterName).right[EarlyReturn].liftState
   } yield parameterValue
 
-  def pushEffect(e: Effect): CombinedStateAndFailure[Unit] = for {
+  def pushEffect(e: Effect): CombinedStateAndFailure[String] = for {
+    x <- "foo".catchExceptionsT("why")
     GlasswareState(req, items) <- getGlasswareState
     _ <- put(GlasswareState(req, e :: items)).liftState
-  } yield ()
+  } yield x
 
   def pushComment(s: String) = pushEffect(Comment(s))
 
@@ -193,6 +194,7 @@ trait StatefulParameterOperations extends Injectable {
 
   def getGenericUrlWithNewPath(path: String) =
     getGenericUrl.map(_.newRawPath(path))
+    
 
   def urlSchemeIs(scheme: HttpRequestWrapper.HttpRequestType)(req: HttpRequestWrapper) =
     req.scheme == scheme

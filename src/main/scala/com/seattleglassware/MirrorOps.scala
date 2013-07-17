@@ -58,6 +58,9 @@ import com.google.api.services.mirror.model.Subscription
 import HttpRequestWrapper._
 import com.seattleglassware.Misc.GenericUrlWithNewScheme
 import com.seattleglassware.GlasswareTypes.stateTypes._
+import com.google.api.services.mirror.model.TimelineItem
+import com.google.api.services.mirror.model.NotificationConfig
+import com.google.glassware.MirrorClient
 
 class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable with StatefulParameterOperations {
   import com.seattleglassware.Misc._
@@ -110,6 +113,10 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       _.contacts.insert(contact).execute
     }
   }
+
+  def insertTimelineItem(credential: Credential, timelineItem: TimelineItem, contentType: String, attachmentInputStream: InputStream) =
+    MirrorClient.insertTimelineItem(credential, timelineItem, contentType, attachmentInputStream)
+      .catchExceptionsT("failed call to MirrorClient.insertTimelineItem")
 
   def insertSubscription(credential: Credential, callbackUrl: String, userId: String, collection: String) = for {
     mirror <- getMirror(credential)
