@@ -20,8 +20,10 @@ import GlasswareTypes.stateTypes.HasLiftFromStateWithFixedStateType
 import GlasswareTypes.stateTypes.HasLiftFromStateWithoutFailure
 import HttpRequestWrapper.Http
 import JavaInterop.safelyCall
+import scalaz._
 import scalaz.Scalaz._
 import scalaz.State
+import scalaz.StateT
 import scalaz.{ \/ => \/ }
 import HttpRequestWrapper._
 import com.seattleglassware.Misc._
