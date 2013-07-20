@@ -34,9 +34,9 @@ import javax.servlet.ServletResponse
 import javax.servlet.http.HttpServletRequest
 import javax.servlet.http.HttpServletResponse
 import scalaz._
-import scalaz.{-\/ => -\/}
-import scalaz.{\/ => \/}
-import scalaz.{\/- => \/-}
+import scalaz.{ -\/ => -\/ }
+import scalaz.{ \/ => \/ }
+import scalaz.{ \/- => \/- }
 import scalaz.Scalaz._
 
 object GlasswareTypes {
@@ -133,12 +133,19 @@ trait StatefulParameterOperations extends Injectable {
 
   def getUserId = getSessionAttribute[String]("userId")
 
-  def getGlasswareState = for {
-    state <- get[GlasswareState].liftState
-  } yield state
+  def getGlasswareState = get[GlasswareState].liftState
+
+  def modifyGlasswareState(s: GlasswareState => GlasswareState) =
+    modify[GlasswareState](s).liftState
+
+  
+  def modifyGlasswareEffects(s: List[Effect] => List[Effect]) = for {
+    _ <- modifyGlasswareState(x => effectsThroughGlasswareState.mod(s, x))
+  } yield ()
+    
 
   def getSessionAttribute[T](attributeName: String) = for {
-    GlasswareState(req, items) <- getGlasswareState
+    GlasswareState(req, _) <- getGlasswareState
     x <- req.getSessionAttribute[T](attributeName).liftState
   } yield x
 
@@ -172,13 +179,12 @@ trait StatefulParameterOperations extends Injectable {
   import scala.collection.JavaConverters._
 
   def getGenericUrl = for {
-    GlasswareState(req, _) <- get[GlasswareState].liftState
+    GlasswareState(req, _) <- getGlasswareState
     url = req.getRequestGenericUrl
   } yield url
 
   def getGenericUrlWithNewPath(path: String) =
     getGenericUrl.map(_.newRawPath(path))
-    
 
   def urlSchemeIs(scheme: HttpRequestWrapper.HttpRequestType)(req: HttpRequestWrapper) =
     req.scheme == scheme
@@ -187,7 +193,8 @@ trait StatefulParameterOperations extends Injectable {
 
   def urlComponentMatches[T](extractor: GenericUrl => T)(fn: T => Boolean, failureExplanation: String) = for {
     url <- getGenericUrl
-    item <- extractor(url).catchExceptionsT(failureExplanation)
+    item <- extractor(url)
+      .catchExceptionsT(failureExplanation)
   } yield fn(item)
 
   def urlPathMatches(fn: List[String] => Boolean, explanation: String) =
