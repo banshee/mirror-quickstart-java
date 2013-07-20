@@ -337,10 +337,9 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     _ <- queueTimelineInsertions(users, allUsersItem, batch, callback)
   } yield ()
 
-  def queueTimelineInsertions(users: List[String], allUsersItem: TimelineItem, batch: BatchRequest, callback: BatchCallback): CombinedStateAndFailure[String] = for {
-    _ <- pushComment("queueTimelineInsertions")
-    items = users map { u => queueTimelineInsertion(u, allUsersItem, batch, callback).run }
-  } yield "foo"
+  def queueTimelineInsertions(users: List[String], allUsersItem: TimelineItem, batch: BatchRequest, callback: BatchCallback) = for {
+    x <- users.foldLeft(zero)((acc, userid) => acc +++ queueTimelineInsertion(userid, allUsersItem, batch, callback))
+  } yield x
 
   def queueTimelineInsertion(userId: String, allUsersItem: TimelineItem, batch: BatchRequest, callback: BatchCallback) = for {
     credential <- m.getCredentialForSpecifiedUser(userId)
@@ -350,7 +349,9 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .insert(allUsersItem)
       .queue(batch, callback)
       .catchExceptionsT("unable to create batch timeline item")
-  } yield result
+  } yield List(userId) // yielding a List[String] so I can use +++ to combine the EitherT items in queueTimelineInsertions
+
+  val zero = EitherT(Applicative[StateWithFixedStateType].point(List.empty[String].right[EarlyReturn]))
 }
 
 class MainServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
