@@ -240,18 +240,6 @@ trait StatefulParameterOperations extends Injectable {
 
   def setUserId(uid: String) = pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
 
-  def trident[U](x: => U)(returnedValid: U => CombinedStateAndFailure[U],
-                          returnedNull: => CombinedStateAndFailure[U],
-                          threwException: Throwable => CombinedStateAndFailure[U]) =
-    try {
-      x match {
-        case null => returnedNull
-        case x    => returnedValid(x)
-      }
-    } catch {
-      case t: Throwable => threwException(t)
-    }
-
   import scala.language.higherKinds
 
   def transformLeft[F[+_], A, B](x: => EitherT[F, A, B])(y: A => EitherT[F, A, B])(implicit F: Bind[F]): EitherT[F, A, B] = {
