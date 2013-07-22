@@ -122,6 +122,8 @@ class TestStatefulParameterOperations extends FunSuite with Matchers with Mockit
   import stateTypes._
 
   class TestClassForState(implicit val bindingModule: BindingModule) extends StatefulParameterOperations {
+    import com.seattleglassware.Misc._
+    
     def failingShark: CombinedStateAndFailure[Int] = for {
       x <- pushComment("shark")
       _ <- FailedCondition("something").liftState

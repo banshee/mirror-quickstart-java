@@ -17,6 +17,11 @@ import javax.servlet.http.HttpServletRequest
 import javax.servlet.http.HttpServletResponse
 import scalaz.Scalaz._
 import scalaz.\/
+import scalaz.-\/
+import scalaz.\/-
+import scalaz.EitherT
+import scalaz.Bind
+
 
 object Misc {
   type =?>[A, B] = PartialFunction[A, B]
@@ -39,6 +44,17 @@ object Misc {
       (pathParts | List.empty) filter { s => s != null && s.length > 0 }
     }
   }
+  
+  import scala.language.higherKinds
+
+  def transformLeft[F[+_], A, B](x: => EitherT[F, A, B])(y: A => EitherT[F, A, B])(implicit F: Bind[F]): EitherT[F, A, B] = {
+    val g = x.run
+    EitherT(F.bind(g) {
+      case -\/(l) => y(l).run
+      case \/-(_) => g
+    })
+  }
+
 }
 
 trait HttpRequestWrapper {
@@ -115,3 +131,4 @@ trait ServletScaffold extends HttpServlet {
 
 abstract class FilterInjectionShim(implicit val bindingModule: BindingModule) extends Filter with ServerPlumbing with FilterScaffold
 abstract class ServletInjectionShim(implicit val bindingModule: BindingModule) extends HttpServlet with ServerPlumbing with ServletScaffold
+

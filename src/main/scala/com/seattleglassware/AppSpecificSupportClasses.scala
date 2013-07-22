@@ -43,7 +43,10 @@ object GlasswareTypes {
   val stateTypes = StateGenerator[GlasswareState, EarlyReturn]
   import stateTypes._
 
-  sealed abstract class EarlyReturn
+  sealed abstract class EarlyReturn {
+    lazy val failure = this.liftState
+    lazy val exitProcessing = this.liftState
+  }
   case class NoSuchParameter(name: String) extends EarlyReturn
   case class NoSuchSessionAttribute(name: String) extends EarlyReturn
   case class WrappedFailure[T](x: T, extraInformation: Option[String] = None) extends EarlyReturn
@@ -60,7 +63,9 @@ object GlasswareTypes {
   case class CopyStreamToOutput(fromStream: InputStream) extends Effect
   case object PlaceholderEffect extends Effect
   case class Comment(s: String) extends Effect
+  case class AddMessage(s: String) extends Effect
   case class WriteText(s: String) extends Effect
+  case class LogAndIgnore(e: EarlyReturn) extends Effect
   case class SetSessionAttribute(name: String, value: String) extends Effect
 
   implicit val partialMonoidForEarlyReturn = new Monoid[EarlyReturn] {
@@ -131,23 +136,36 @@ trait StatefulParameterOperations extends Injectable {
 
   def pushComment(s: String) = pushEffect(Comment(s))
 
-  def getUserId = getSessionAttribute[String]("userId")
+  def getUserId = getSessionAttribute("userId")
 
   def getGlasswareState = get[GlasswareState].liftState
 
   def modifyGlasswareState(s: GlasswareState => GlasswareState) =
     modify[GlasswareState](s).liftState
 
-  
   def modifyGlasswareEffects(s: List[Effect] => List[Effect]) = for {
     _ <- modifyGlasswareState(x => effectsThroughGlasswareState.mod(s, x))
   } yield ()
-    
 
-  def getSessionAttribute[T](attributeName: String) = for {
+  def addGlasswareEffect(e: Effect) = modifyGlasswareEffects(xs => e :: xs)
+  def message(s: String) = addGlasswareEffect(AddMessage(s))
+
+  def findSetSessionInState(name: String) = for {
+    GlasswareState(_, items) <- getGlasswareState
+    result <- items.collectFirst {
+      case SetSessionAttribute(n, v) if n == name => v
+    }.toRightDisjunction(NoSuchParameter(name)).liftState
+  } yield result
+
+  def getSessionAttributeFromRequest(attributeName: String) = for {
     GlasswareState(req, _) <- getGlasswareState
-    x <- req.getSessionAttribute[T](attributeName).liftState
+    x <- req.getSessionAttribute[String](attributeName).liftState
   } yield x
+
+//  def getSessionAttribute(name: String) =
+//    findSetSessionInState(name) orElse getSessionAttributeFromRequest(name)
+  def getSessionAttribute(name: String) = 
+    getSessionAttributeFromRequest(name).orElse(findSetSessionInState(name))
 
   import HttpRequestWrapper._
   import com.seattleglassware.Misc.GenericUrlWithNewScheme
@@ -158,7 +176,7 @@ trait StatefulParameterOperations extends Injectable {
     redirect <- if (pathMatches) YieldToNextFilter.liftState else noOp
   } yield 1
 
-  def noOp = ().liftState
+  val noOp = ().right[EarlyReturn].liftState
 
   def redirectToHttps = for {
     url <- getGenericUrl
@@ -182,6 +200,11 @@ trait StatefulParameterOperations extends Injectable {
     GlasswareState(req, _) <- getGlasswareState
     url = req.getRequestGenericUrl
   } yield url
+
+  def redirectToNewPath(p: String, reason: String) = for {
+    u <- getGenericUrlWithNewPath(p)
+    redirectCommand <- ExecuteRedirect(u, reason).exitProcessing
+  } yield redirectCommand
 
   def getGenericUrlWithNewPath(path: String) =
     getGenericUrl.map(_.newRawPath(path))
@@ -246,16 +269,6 @@ trait StatefulParameterOperations extends Injectable {
   } yield deleted
 
   def setUserId(uid: String) = pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
-
-  import scala.language.higherKinds
-
-  def transformLeft[F[+_], A, B](x: => EitherT[F, A, B])(y: A => EitherT[F, A, B])(implicit F: Bind[F]): EitherT[F, A, B] = {
-    val g = x.run
-    EitherT(F.bind(g) {
-      case -\/(l) => y(l).run
-      case \/-(_) => g
-    })
-  }
 }
 
 object SessionAttributes {
@@ -267,10 +280,15 @@ trait ServerPlumbing extends StatefulParameterOperations {
   implicit val bindingModule: BindingModule
 
   def doServerPlumbing[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
-    val (state, result) = s.run(GlasswareState(req))
-    val effects = effectsThroughGlasswareState.get(state)
-    executeEffects(effects, req, resp, None, result)
-    executeResult(result, req, resp, None)
+    try {
+      val (state, result) = s.run(GlasswareState(req))
+          val effects = effectsThroughGlasswareState.get(state)
+          executeEffects(effects, req, resp, None, result)
+          executeResult(result, req, resp, None)
+      
+    } catch {
+      case e: Throwable => println("got runtimeexception: " + e.getCause().toString + "////" + e.printStackTrace() )
+    }
   }
 
   def doFilterPlumbing[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
@@ -305,7 +323,11 @@ trait ServerPlumbing extends StatefulParameterOperations {
       }
     case WriteText(s) => throw new RuntimeException("WriteText not yet implemented")
     case SetSessionAttribute(name, value) =>
-      val session = Option(req.getSession) map { _.setAttribute(name, value) }
+      Option(req.getSession) map { _.setAttribute(name, value) }
+    case AddMessage(m) =>
+      Option(req.getSession) map { _.setAttribute("flash", m) }
+    case LogAndIgnore(m) =>
+      // Don't do anything here
     case Comment(_) | PlaceholderEffect => // Do nothing
   }
 }

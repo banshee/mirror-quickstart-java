@@ -157,9 +157,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
 
     _ <- bootstrapNewUser(userId)
 
-    destination <- getGenericUrlWithNewPath("/")
-
-    _ <- ExecuteRedirect(destination, "finished oauth2 dance").liftState
+    _ <- redirectToNewPath("/", "finished oauth2 dance")
   } yield ()
 
   def bootstrapNewUser(userId: String) = for {
@@ -214,7 +212,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
   val m = inject[MirrorOps]
 
   class BatchCallback extends JsonBatchCallback[TimelineItem] {
-    override def onSuccess(t, responseHeaders) = {
+    override def onSuccess(t: TimelineItem, responseHeaders: HttpHeaders) = {
 
     }
 
@@ -223,16 +221,39 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     }
   }
 
+  implicit class OrElseMessage[T](x: CombinedStateAndFailure[T]) {
+    def orElseMessage(s: String) = {
+      def prependStateMsg(e: EarlyReturn) = for {
+        _ <- addGlasswareEffect(LogAndIgnore(e))
+        _ <- addGlasswareEffect(AddMessage(s))
+      } yield ()
+      val ignoringRight = x.map(rightvalue => ())
+      transformLeft(ignoringRight)(error => prependStateMsg(error))
+    }
+  }
+
   def mainservletAction = for {
     operation <- getParameter("operation")
     _ <- pushComment(s"executing operation $operation")
     _ <- operation match {
-      case "deleteSubscription"   => deleteSubscription
-      case "insertItem"           => insertItem
-      case "insertItemWithAction" => insertItemWithAction
-      case "insertSubscription"   => insertSubscription
-      case _                      => noOp
+    case "insertSubscription" =>
+    insertSubscription orElseMessage "Failed to subscribe. Check your log for details"
+      case "deleteSubscription" =>
+        deleteSubscription orElseMessage "Failed to delete subscription"
+      case "insertItem" =>
+        insertItem orElseMessage "Failed to insert item"
+      case "insertContact" =>
+        insertContact orElseMessage "Failed to insert contact"
+      case "deleteContact" =>
+        deleteContact orElseMessage "Failed to delete contact"
+      case "insertItemWithAction" =>
+        insertItemWithAction orElseMessage "Failed to insert item"
+      case "insertItemAllUsers" =>
+        insertItemAllUsers orElseMessage "Failed to insert items for all users"
+      case unknownCommand => modifyGlasswareEffects(
+        xs => Comment(s"Unknown commmand $unknownCommand") :: AddMessage("I don't know how to do that") :: xs)
     }
+    _ <- redirectToNewPath("/", s"finished operation $operation")
   } yield ()
 
   def insertItemWithAction = for {
@@ -255,35 +276,43 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .catchExceptionsT("could not build timeline item")
     userId <- getUserId
     credential <- getCredential
-    insertedTimelineItem <- MirrorClient.insertTimelineItem(credential, timelineItem)
-      .catchExceptionsT("failed to insert timeline item")
-    _ <- pushComment("A timeline item with actions has been inserted.")
+    insertedTimelineItem <- m.insertTimelineItemWithoutContent(credential, timelineItem)
+    _ <- addGlasswareEffect(AddMessage("A timeline item with actions has been inserted."))
   } yield insertedTimelineItem
 
   def insertItem = for {
     timelineItem <- (new TimelineItem)
       .catchExceptionsT("failed to create TimelineItem object")
+
     message <- getOptionalParameter("message")
-    _ = message foreach { s => timelineItem.setText(s) }
-    _ = timelineItem.setNotification((new NotificationConfig).setLevel("DEFAULT"))
+    _ <- timelineItem.setText(message | null)
+      .catchExceptionsT("could not set text")
+
+    _ <- timelineItem
+      .setNotification((new NotificationConfig).setLevel("DEFAULT"))
+      .catchExceptionsT("unable to set notification level")
 
     imageUrlParameter <- getOptionalParameter("imageUrl")
-    convertedUrl <- (imageUrlParameter map { x => new URL(x) })
+
+    // If the url is provided, make sure it's really a url
+    optionalUrlObject <- (imageUrlParameter map { x => new URL(x) })
       .catchExceptionsT(s"could not create url from $imageUrlParameter")
+
     contentTypeParameter <- getOptionalParameter("contentType")
     userId <- getUserId
     credential <- getCredential
-    _ <- (imageUrlParameter, contentTypeParameter) match {
+    _ <- (optionalUrlObject, contentTypeParameter) match {
       case (Some(i), Some(c)) =>
-        MirrorClient.insertTimelineItem(credential,
+        m.insertTimelineItemUsingUrl(credential,
           timelineItem,
           c,
-          (new URL(i)).openStream)
-          .catchExceptionsT("could not insert item into timeline along with an image")
-      case _ =>
-        MirrorClient.insertTimelineItem(credential, timelineItem)
-          .catchExceptionsT("could not insert item into timeline")
+          i)
+      case (None, None) =>
+        m.insertTimelineItemWithoutContent(credential, timelineItem)
+      case x =>
+        FailedCondition(s"need both content type and url, got: $x").failure
     }
+    _ <- addGlasswareEffect(AddMessage("A timeline item has been inserted."))
   } yield userId
 
   def insertSubscription = for {
@@ -291,12 +320,12 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     credential <- getCredential
     collection <- getParameter("collection")
     callbackUrl <- getGenericUrlWithNewPath("/notify")
-    _ <- m.insertSubscription(credential, callbackUrl.toString, userId, collection)
-      .catchExceptionsT("Could not subscribe $callbackUrl $collection")
-  } yield collection
+    subscription <- m.insertSubscription(credential, callbackUrl.toString, userId, collection)
+    _ <- addGlasswareEffect(AddMessage("Application is now subscribed to updates."))
+  } yield subscription
 
   def insertContact = for {
-    _ <- pushComment("Inserting contact Item")
+    _ <- pushComment("Inserting contact item")
     iconUrl <- getParameter("iconUrl")
     name <- getParameter("name")
     userId <- getUserId
@@ -306,9 +335,8 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .setDisplayName(name)
       .setImageUrls(List(iconUrl).asJava)
       .catchExceptionsT("could not build contact")
-    _ <- MirrorClient.insertContact(credential, contact)
-      .catchExceptionsT("could not insert contact")
-    _ <- pushComment(s"Inserted contact: $name")
+    _ <- m.insertContact(credential, contact)
+    _ <- message(s"Inserted contact: $name")
   } yield 1
 
   def deleteSubscription = for {
@@ -321,25 +349,39 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     credential <- getCredential
     id <- getParameter("id")
     _ <- m.deleteContact(credential, id)
+    _ <- message("Contact has been deleted.")
   } yield ()
+
+  def ifCondition(condition: => Boolean, result: CombinedStateAndFailure[_]) =
+    if (condition) result else noOp
+
+  def ifOption[T, U](opt: => Option[T], result: T => CombinedStateAndFailure[U]): CombinedStateAndFailure[_] =
+    if (opt.isDefined) result(opt.get) else noOp
 
   def insertItemAllUsers = for {
     url <- getGenericUrl
-    _ <- if (url.getHost.contains("glass-java-starter-demo.appspot.com")) FinishedProcessing("This function is disabled on the demo instance").liftState else noOp
+
+    _ <- ifCondition(url.getHost.contains("glass-java-starter-demo.appspot.com"),
+      FinishedProcessing("This function is disabled on the demo instance").exitProcessing)
+
     users = AuthUtil.getAllUserIds.asScala.toList
-    // guard against too many users
-    _ <- if (users.size > 10) FailedCondition("too many users").liftState else noOp
+
+    _ <- ifCondition(users.size > 10,
+      FailedCondition("too many users").failure)
 
     allUsersItem = (new TimelineItem).setText("Hello Everyone!")
-    batch <- m.getBatch
-    callback = new BatchCallback
 
-    _ <- queueTimelineInsertions(users, allUsersItem, batch, callback)
+    _ <- queueTimelineInsertions(users, allUsersItem)
   } yield ()
 
-  def queueTimelineInsertions(users: List[String], allUsersItem: TimelineItem, batch: BatchRequest, callback: BatchCallback) = for {
-    x <- users.foldLeft(zero)((acc, userid) => acc +++ queueTimelineInsertion(userid, allUsersItem, batch, callback))
-  } yield x
+  def queueTimelineInsertions(users: List[String], allUsersItem: TimelineItem) = for {
+    batch <- m.getBatch
+    callback = new BatchCallback
+    userIds <- users.foldLeft(zero)((acc, userid) => acc +++ queueTimelineInsertion(userid, allUsersItem, batch, callback))
+    _ <- batch.execute
+      .catchExceptionsT("failed to execute batch for inserting item for all users")
+    _ <- message(s"Successfully sent cards to ${callback.success} users + ${callback.failure} failed.")
+  } yield userIds
 
   def queueTimelineInsertion(userId: String, allUsersItem: TimelineItem, batch: BatchRequest, callback: BatchCallback) = for {
     credential <- m.getCredentialForSpecifiedUser(userId)

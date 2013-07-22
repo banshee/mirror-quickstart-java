@@ -62,6 +62,7 @@ import com.google.api.services.mirror.model.TimelineItem
 import com.google.api.services.mirror.model.NotificationConfig
 import com.google.glassware.MirrorClient
 import com.google.api.client.http.ByteArrayContent
+import java.net.URL
 
 class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable with StatefulParameterOperations {
   import com.seattleglassware.Misc._
@@ -109,23 +110,42 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
     contentType <- metadata.getContentType.catchExceptionsT("no content type")
   } yield contentType
 
-  def insertContact(credential: Credential, contact: Contact) = {
-    getMirror(credential).map {
-      _.contacts.insert(contact).execute
-    }
-  }
+  def insertContact(credential: Credential, contact: Contact) = for {
+    m <- getMirror(credential)
+    c <- m.contacts
+      .insert(contact)
+      .execute
+      .catchExceptionsT("unable to insert contact")
+  } yield c
 
   def insertTimelineItem(credential: Credential, timelineItem: TimelineItem, contentType: String, attachmentData: Array[Byte]) = for {
     mirror <- getMirror(credential)
+    contentBytes <- (new ByteArrayContent(contentType, attachmentData))
+      .catchExceptionsT("unable to build content for attachment")
     item <- mirror
       .timeline
-      .insert(timelineItem, new ByteArrayContent(contentType, attachmentData))
+      .insert(timelineItem, contentBytes)
       .execute
       .catchExceptionsT("failed to insert timeline item with attachment as byte array")
   } yield item
 
+  def insertTimelineItemWithoutContent(credential: Credential, timelineItem: TimelineItem) = for {
+    mirror <- getMirror(credential)
+    item <- mirror
+      .timeline
+      .insert(timelineItem)
+      .execute
+      .catchExceptionsT("failed to insert timeline item with without content")
+  } yield item
+
   def insertTimelineItemUsingStream(credential: Credential, timelineItem: TimelineItem, contentType: String, attachmentStream: InputStream) =
     insertTimelineItem(credential, timelineItem, contentType, ByteStreams.toByteArray(attachmentStream))
+
+  def insertTimelineItemUsingUrl(credential: Credential, timelineItem: TimelineItem, contentType: String, url: URL) = for {
+    s <- url.openStream
+      .catchExceptionsT(s"unable to open stream for url $url")
+    result <- insertTimelineItemUsingStream(credential, timelineItem, contentType, s)
+  } yield result
 
   def insertSubscription(credential: Credential, callbackUrl: String, userId: String, collection: String) = for {
     mirror <- getMirror(credential)
@@ -145,10 +165,10 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
     subs <- mirror.subscriptions
       .catchExceptionsT("could not get subscriptions")
     deleteThunk <- subs.delete(subscriptionId)
-      .catchExceptionsT("could not delete subscription")
+      .catchExceptionsT("could not build delete subscription thunk")
     _ <- deleteThunk.execute
       .catchExceptionsT("executing delete command failed")
-  } yield subscriptionId
+  } yield ()
 
   def deleteContact(credential: Credential, id: String) = for {
     mirror <- getMirror(credential)
