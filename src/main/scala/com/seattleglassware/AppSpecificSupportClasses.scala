@@ -3,12 +3,10 @@ package com.seattleglassware
 import java.io.FileInputStream
 import java.io.InputStream
 import java.util.Properties
-
 import scala.collection.JavaConversions.seqAsJavaList
 import scala.collection.JavaConverters.collectionAsScalaIterableConverter
 import scala.language.higherKinds
 import scala.util.control.Exception.ultimately
-
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
 import com.escalatesoft.subcut.inject.bindingIdToString
@@ -25,7 +23,6 @@ import com.seattleglassware.BindingIdentifiers.OAuthPropertiesFileLocation
 import com.seattleglassware.EitherTWithState._
 import com.seattleglassware.GlasswareTypes._
 import com.seattleglassware.Misc.GenericUrlWithNewScheme
-
 import HttpRequestWrapper.HttpServletRequestWrapper
 import JavaInterop.safelyCall
 import javax.servlet.FilterChain
@@ -38,6 +35,7 @@ import scalaz.{ -\/ => -\/ }
 import scalaz.{ \/ => \/ }
 import scalaz.{ \/- => \/- }
 import scalaz.Scalaz._
+import java.io.Closeable
 
 object GlasswareTypes {
   val stateTypes = StateGenerator[GlasswareState, EarlyReturn]
@@ -67,6 +65,7 @@ object GlasswareTypes {
   case class WriteText(s: String) extends Effect
   case class LogAndIgnore(e: EarlyReturn) extends Effect
   case class SetSessionAttribute(name: String, value: String) extends Effect
+  case class CleanupCloseable(x: Closeable) extends Effect
 
   implicit val partialMonoidForEarlyReturn = new Monoid[EarlyReturn] {
     case object NoOp extends EarlyReturn
@@ -79,16 +78,20 @@ object GlasswareTypes {
       }
   }
 
-  implicit class CatchExceptionsWrapper[T](t: => T) {
-    def catchExceptions(extra: => String = "(no additional information)") = safelyCall(t)(
+  implicit class MapErrorsWrapper[T](t: => T) {
+    def mapExceptionToLeft(extra: => String = "(no additional information)"): CombinedStateAndFailure[T] =
+      {
+        try {
+          t.right[EarlyReturn]
+        } catch {
+          case ex: Throwable => WrappedFailure(ex, extra.some).left[T]
+        }
+      }.liftState
+
+    def mapExceptionOrNullToLeft(extra: => String = "(no additional information)") = safelyCall(t)(
       x => x.right,
       WrappedNull(extra.some).left,
-      t => WrappedFailure(t, extra.some).left)
-  }
-
-  implicit class CatchExceptionsTransformerWrapper[T](t: => T) {
-    def catchExceptionsT(extra: => String = "(no additional information)") =
-      t.catchExceptions(extra).liftState
+      t => WrappedFailure(t, extra.some).left).liftState
   }
 
   sealed case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
@@ -118,9 +121,8 @@ trait StatefulParameterOperations extends Injectable {
 
   def getParameter(parameterName: String) = for {
     value <- getOptionalParameter(parameterName)
-    result <- value
-      .get
-      .catchExceptionsT(s"could not get parameter $parameterName")
+    result <- value.get
+      .mapExceptionOrNullToLeft(s"could not get parameter $parameterName")
   } yield result
 
   def getOptionalParameter(parameterName: String): CombinedStateAndFailure[Option[String]] = for {
@@ -128,11 +130,10 @@ trait StatefulParameterOperations extends Injectable {
     parameterValue <- req.getParameter(parameterName).right[EarlyReturn].liftState
   } yield parameterValue
 
-  def pushEffect(e: Effect): CombinedStateAndFailure[String] = for {
-    x <- "foo".catchExceptionsT("why")
+  def pushEffect(e: Effect) = for {
     GlasswareState(req, items) <- getGlasswareState
     _ <- put(GlasswareState(req, e :: items)).liftState
-  } yield x
+  } yield ()
 
   def pushComment(s: String) = pushEffect(Comment(s))
 
@@ -162,9 +163,9 @@ trait StatefulParameterOperations extends Injectable {
     x <- req.getSessionAttribute[String](attributeName).liftState
   } yield x
 
-//  def getSessionAttribute(name: String) =
-//    findSetSessionInState(name) orElse getSessionAttributeFromRequest(name)
-  def getSessionAttribute(name: String) = 
+  //  def getSessionAttribute(name: String) =
+  //    findSetSessionInState(name) orElse getSessionAttributeFromRequest(name)
+  def getSessionAttribute(name: String) =
     getSessionAttributeFromRequest(name).orElse(findSetSessionInState(name))
 
   import HttpRequestWrapper._
@@ -217,7 +218,7 @@ trait StatefulParameterOperations extends Injectable {
   def urlComponentMatches[T](extractor: GenericUrl => T)(fn: T => Boolean, failureExplanation: String) = for {
     url <- getGenericUrl
     item <- extractor(url)
-      .catchExceptionsT(failureExplanation)
+      .mapExceptionOrNullToLeft(failureExplanation)
   } yield fn(item)
 
   def urlPathMatches(fn: List[String] => Boolean, explanation: String) =
@@ -229,27 +230,34 @@ trait StatefulParameterOperations extends Injectable {
   def parameterExists(parameterName: String)(req: HttpRequestWrapper) =
     parameterMatches("error", _ != null)(req)
 
-  def newAuthorizationCodeFlow(): EarlyReturn \/ AuthorizationCodeFlow = {
-    for {
-      authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation)).
-        catchExceptions(s"open auth file oauthPropertiesFileLocation")
+  def newAuthorizationCodeFlow(): CombinedStateAndFailure[AuthorizationCodeFlow] = for {
+    authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation))
+      .mapExceptionOrNullToLeft(s"open auth file oauthPropertiesFileLocation")
+    _ <- pushEffect(CleanupCloseable(authPropertiesStream))
 
-      authProperties = new Properties
+    authProperties = new Properties
 
-      _ <- authProperties.load(authPropertiesStream).
-        catchExceptions("loading properties stream")
+    _ <- authProperties
+      .load(authPropertiesStream)
+      .mapExceptionOrNullToLeft("loading properties stream")
 
-      clientId <- authProperties.getProperty("client_id").
-        catchExceptions("error getting client id")
+    clientId <- authProperties.getProperty("client_id").
+      mapExceptionOrNullToLeft("error getting client id")
 
-      clientSecret <- authProperties.getProperty("client_secret").
-        catchExceptions("error getting client secret")
-    } yield {
-      new GoogleAuthorizationCodeFlow.Builder(urlFetchTransport, jacksonFactory,
-        clientId, clientSecret, Seq(glassScope)).setAccessType("offline")
-        .setCredentialStore(credentialStore).build()
-    }
-  }
+    clientSecret <- authProperties.getProperty("client_secret").
+      mapExceptionOrNullToLeft("error getting client secret")
+
+    result <- (new GoogleAuthorizationCodeFlow.Builder(
+      urlFetchTransport,
+      jacksonFactory,
+      clientId,
+      clientSecret,
+      Seq(glassScope))
+      .setAccessType("offline")
+      .setCredentialStore(credentialStore)
+      .build())
+      .mapExceptionOrNullToLeft("failed to build authorization flow")
+  } yield result
 
   def getCredential = for {
     userId <- getUserId
@@ -257,15 +265,15 @@ trait StatefulParameterOperations extends Injectable {
   } yield credential
 
   def getCredentialForSpecifiedUser(userId: String) = for {
-    authorizationFlow <- newAuthorizationCodeFlow.liftState
-    credential <- authorizationFlow.loadCredential(userId).
-      catchExceptionsT("error locating credential")
+    authorizationFlow <- newAuthorizationCodeFlow
+    credential <- authorizationFlow.loadCredential(userId)
+      .mapExceptionOrNullToLeft("error locating credential")
   } yield credential
 
   def clearUserId(userId: String) = for {
     credential <- getCredential
     deleted <- credentialStore.delete(userId, credential)
-      .catchExceptionsT("failed to delete credential from store")
+      .mapExceptionToLeft("failed to delete credential from store")
   } yield deleted
 
   def setUserId(uid: String) = pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
@@ -282,12 +290,14 @@ trait ServerPlumbing extends StatefulParameterOperations {
   def doServerPlumbing[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
     try {
       val (state, result) = s.run(GlasswareState(req))
-          val effects = effectsThroughGlasswareState.get(state)
-          executeEffects(effects, req, resp, None, result)
-          executeResult(result, req, resp, None)
-      
+      val effects = effectsThroughGlasswareState.get(state)
+      executeEffects(effects, req, resp, None, result)
+      executeResult(result, req, resp, None)
     } catch {
-      case e: Throwable => println("got runtimeexception: " + e.getCause().toString + "////" + e.printStackTrace() )
+      case e: Throwable =>
+        println(s"snark! $e")
+        println("got runtimeexception: ////")
+        e.printStackTrace
     }
   }
 
@@ -316,18 +326,24 @@ trait ServerPlumbing extends StatefulParameterOperations {
   }
 
   def executeEffect[T](req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], result: EarlyReturn \/ T)(e: Effect) = e match {
-    case SetResponseContentType(s) => resp.setContentType(s)
+    case SetResponseContentType(s) =>
+      resp.setContentType(s)
     case CopyStreamToOutput(stream) =>
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
-    case WriteText(s) => throw new RuntimeException("WriteText not yet implemented")
+    case WriteText(s) => 
+      throw new RuntimeException("WriteText not yet implemented")
     case SetSessionAttribute(name, value) =>
       Option(req.getSession) map { _.setAttribute(name, value) }
     case AddMessage(m) =>
       Option(req.getSession) map { _.setAttribute("flash", m) }
-    case LogAndIgnore(m) =>
-      // Don't do anything here
-    case Comment(_) | PlaceholderEffect => // Do nothing
+    case CleanupCloseable(c) => 
+      try {
+        c.close
+      } catch {
+        case e: java.io.IOException => 
+      }
+    case LogAndIgnore(_) | Comment(_) | PlaceholderEffect => // Do nothing
   }
 }

@@ -12,3 +12,4 @@ web/WEB-INF/classes
 
 target
 web/oauth.properties
+src/main/webapp

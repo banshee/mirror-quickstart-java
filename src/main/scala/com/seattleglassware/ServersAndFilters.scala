@@ -118,12 +118,12 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
 
   def startOAuth2Dance = for {
     _ <- pushComment("starting OAuth2 dance")
-    flow <- newAuthorizationCodeFlow.liftState
+    flow <- newAuthorizationCodeFlow
     redirectUrl <- getGenericUrlWithNewPath("/oauth2callback")
-    authorizationCodeRequestUrl <- flow.newAuthorizationUrl()
+    authorizationCodeRequestUrl <- flow.newAuthorizationUrl
       .setRedirectUri(redirectUrl.toString)
       .set("approval_prompt", "force")
-      .catchExceptionsT("failed to create new authorization url")
+      .mapExceptionOrNullToLeft("failed to create new authorization url")
 
     _ <- ExecuteRedirect(authorizationCodeRequestUrl, "continuing oauth2 dance by redirecting to the remote auth url").liftState
   } yield ()
@@ -131,35 +131,34 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   def finishOAuth2Dance(code: String) = for {
     _ <- pushComment("finishing OAuth2 dance")
 
-    flow <- newAuthorizationCodeFlow.liftState
+    flow <- newAuthorizationCodeFlow
     oauth2callbackUrl <- getGenericUrlWithNewPath("/oauth2callback")
 
     tokenResponse <- flow.newTokenRequest(code)
       .setRedirectUri(oauth2callbackUrl.toString)
       .execute
-      .catchExceptionsT("newTokenRequest failed")
+      .mapExceptionToLeft("newTokenRequest failed")
 
     userId <- tokenResponse.asInstanceOf[GoogleTokenResponse]
       .parseIdToken
       .getPayload
       .getUserId
-      .catchExceptionsT("extracting userid from google token response failed")
+      .mapExceptionToLeft("extracting userid from google token response failed")
 
     _ <- pushComment("Code exchange worked. User " + userId + " logged in.")
 
     _ <- setUserId(userId)
 
-    _ <- flow.createAndStoreCredential(tokenResponse, userId)
-      .catchExceptionsT("createAndStoreCredential failed")
-
-    state <- get[GlasswareState].liftState
-    _ = println(s"current state is $state")
+    responseToken <- flow.createAndStoreCredential(tokenResponse, userId)
+      .mapExceptionOrNullToLeft("createAndStoreCredential failed")
 
     _ <- bootstrapNewUser(userId)
 
     _ <- redirectToNewPath("/", "finished oauth2 dance")
   } yield ()
 
+  def capableOfSubscriptions = false
+  
   def bootstrapNewUser(userId: String) = for {
     _ <- pushComment("bootstrapping new user")
 
@@ -172,15 +171,16 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .setId(MainServlet.CONTACT_NAME)
       .setDisplayName(MainServlet.CONTACT_NAME)
       .setImageUrls(imageUrls.map(_.toString).asJava)
-      .catchExceptionsT("failed to create new contact")
+      .mapExceptionOrNullToLeft("failed to create new contact")
 
     insertedContact <- insertContact(credential, starterProjectContact).liftState
-    subscription <- insertSubscription(
-      credential,
-      catUrl.newRawPath("/notify").toString,
-      userId,
-      "timeline")
-      .catchExceptionsT("Failed to create timeline subscription. Might be running on localhost")
+    subscription <- if (capableOfSubscriptions)
+      insertSubscription(
+        credential,
+        catUrl.newRawPath("/notify").toString,
+        userId,
+        "timeline")
+    else noOp
 
     timelineItem <- (new TimelineItem)
       .setText("Welcome to the Glass Java Quick Start")
@@ -236,8 +236,8 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     operation <- getParameter("operation")
     _ <- pushComment(s"executing operation $operation")
     _ <- operation match {
-    case "insertSubscription" =>
-    insertSubscription orElseMessage "Failed to subscribe. Check your log for details"
+      case "insertSubscription" =>
+        insertSubscription orElseMessage "Failed to subscribe. Check your log for details"
       case "deleteSubscription" =>
         deleteSubscription orElseMessage "Failed to delete subscription"
       case "insertItem" =>
@@ -260,7 +260,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     timelineItem <- (
       (new TimelineItem)
       .setText("Tell me what you had for lunch :)"))
-      .catchExceptionsT("failed to create TimelineItem object")
+      .mapExceptionOrNullToLeft("failed to create TimelineItem object")
     drillImageUrl <- getGenericUrlWithNewPath("/static/images/drill.png")
     menuValues = List(
       (new MenuValue)
@@ -273,7 +273,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     timelineItem <- timelineItem
       .setMenuItems(menuItemList.asJava)
       .setNotification((new NotificationConfig).setLevel("DEFAULT"))
-      .catchExceptionsT("could not build timeline item")
+      .mapExceptionOrNullToLeft("could not build timeline item")
     userId <- getUserId
     credential <- getCredential
     insertedTimelineItem <- m.insertTimelineItemWithoutContent(credential, timelineItem)
@@ -282,21 +282,19 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
 
   def insertItem = for {
     timelineItem <- (new TimelineItem)
-      .catchExceptionsT("failed to create TimelineItem object")
+      .mapExceptionOrNullToLeft("failed to create TimelineItem object")
 
     message <- getOptionalParameter("message")
-    _ <- timelineItem.setText(message | null)
-      .catchExceptionsT("could not set text")
-
     _ <- timelineItem
+      .setText(message | null)
       .setNotification((new NotificationConfig).setLevel("DEFAULT"))
-      .catchExceptionsT("unable to set notification level")
+      .mapExceptionOrNullToLeft("unable to set notification level")
 
     imageUrlParameter <- getOptionalParameter("imageUrl")
 
     // If the url is provided, make sure it's really a url
     optionalUrlObject <- (imageUrlParameter map { x => new URL(x) })
-      .catchExceptionsT(s"could not create url from $imageUrlParameter")
+      .mapExceptionOrNullToLeft(s"could not create url from $imageUrlParameter")
 
     contentTypeParameter <- getOptionalParameter("contentType")
     userId <- getUserId
@@ -334,7 +332,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .setId(name)
       .setDisplayName(name)
       .setImageUrls(List(iconUrl).asJava)
-      .catchExceptionsT("could not build contact")
+      .mapExceptionOrNullToLeft("could not build contact")
     _ <- m.insertContact(credential, contact)
     _ <- message(s"Inserted contact: $name")
   } yield 1
@@ -379,7 +377,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     callback = new BatchCallback
     userIds <- users.foldLeft(zero)((acc, userid) => acc +++ queueTimelineInsertion(userid, allUsersItem, batch, callback))
     _ <- batch.execute
-      .catchExceptionsT("failed to execute batch for inserting item for all users")
+      .mapExceptionToLeft("failed to execute batch for inserting item for all users")
     _ <- message(s"Successfully sent cards to ${callback.success} users + ${callback.failure} failed.")
   } yield userIds
 
@@ -390,7 +388,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .timeline
       .insert(allUsersItem)
       .queue(batch, callback)
-      .catchExceptionsT("unable to create batch timeline item")
+      .mapExceptionToLeft("unable to create batch timeline item")
   } yield List(userId) // yielding a List[String] so I can use +++ to combine the EitherT items in queueTimelineInsertions
 
   val zero = EitherT(Applicative[StateWithFixedStateType].point(List.empty[String].right[EarlyReturn]))

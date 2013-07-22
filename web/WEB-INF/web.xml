@@ -33,7 +33,7 @@ limitations under the License.
   <!-- servlets -->
   <servlet>
     <servlet-name>main</servlet-name>
-    <servlet-class>com.google.glassware.MainServlet</servlet-class>
+    <servlet-class>com.seattleglassware.MainServlet</servlet-class>
   </servlet>
   <servlet-mapping>
     <servlet-name>main</servlet-name>

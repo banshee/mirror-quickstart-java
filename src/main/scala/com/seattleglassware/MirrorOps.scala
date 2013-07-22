@@ -76,25 +76,30 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
   def getAttachmentInputStream(credential: Credential, timelineItemId: String, attachmentId: String) = for {
     mirror <- getMirror(credential)
     attachmentsMetadata <- getAttachmentMetadata(mirror, timelineItemId, attachmentId)
-    url <- attachmentsMetadata.getContentUrl
-      .catchExceptionsT("could not get content url for attachment")
-    genericUrl <- new GenericUrl(url)
-      .catchExceptionsT(s"could not build genericUrl from [$url]")
-    request = mirror.getRequestFactory.buildGetRequest(genericUrl)
-    resp <- request.execute
-      .catchExceptionsT("error fetching a mirror request")
+    url <- Option(attachmentsMetadata.getContentUrl)
+      .mapExceptionToLeft("could not get content url for attachment")
+    genericUrl <- new GenericUrl(url | null)
+      .mapExceptionToLeft(s"could not build genericUrl from [$url]")
+    resp <- mirror
+      .getRequestFactory
+      .buildGetRequest(genericUrl)
+      .execute
+      .mapExceptionToLeft("error fetching a mirror request")
     content <- resp.getContent
-      .catchExceptionsT("error getting the content of an attachment")
+      .mapExceptionToLeft("error getting the content of an attachment")
+    _ <- pushEffect(CleanupCloseable(content))
   } yield content
 
   def getAttachmentMetadata(mirror: Mirror, timelineItemId: String, attachmentId: String) = {
     for {
-      attachments <- mirror.timeline.attachments
-        .catchExceptionsT("failed to get timeline attachments")
+      attachments <- mirror
+        .timeline
+        .attachments
+        .mapExceptionOrNullToLeft("Failed to get attachments")
       attachmentsRequest <- attachments.get(timelineItemId, attachmentId)
-        .catchExceptionsT("error creating attachments request")
+        .mapExceptionOrNullToLeft("error creating attachments request")
       attachmentsMetadata <- attachmentsRequest.execute
-        .catchExceptionsT("error executing attachments fetch")
+        .mapExceptionToLeft("error executing attachments fetch")
     } yield attachmentsMetadata
   }
 
@@ -102,12 +107,16 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
     result <- new Mirror.Builder(urlFetchTransport, jacksonFactory, credential)
       .setApplicationName(applicationName)
       .build()
-      .catchExceptionsT("failed to build a mirror object")
+      .mapExceptionOrNullToLeft("failed to build a mirror object")
   } yield result
 
   def getAttachmentContentType(mirror: Mirror, timelineItemId: String, attachmentId: String) = for {
     metadata <- getAttachmentMetadata(mirror, timelineItemId, attachmentId)
-    contentType <- metadata.getContentType.catchExceptionsT("no content type")
+    // note that null means no content type,
+    // but if you're calling this method then no content type
+    // is fatal
+    contentType <- metadata.getContentType
+      .mapExceptionToLeft("no content type")
   } yield contentType
 
   def insertContact(credential: Credential, contact: Contact) = for {
@@ -115,18 +124,18 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
     c <- m.contacts
       .insert(contact)
       .execute
-      .catchExceptionsT("unable to insert contact")
+      .mapExceptionToLeft("unable to insert contact")
   } yield c
 
   def insertTimelineItem(credential: Credential, timelineItem: TimelineItem, contentType: String, attachmentData: Array[Byte]) = for {
     mirror <- getMirror(credential)
     contentBytes <- (new ByteArrayContent(contentType, attachmentData))
-      .catchExceptionsT("unable to build content for attachment")
+      .mapExceptionOrNullToLeft("unable to build content for attachment")
     item <- mirror
       .timeline
       .insert(timelineItem, contentBytes)
       .execute
-      .catchExceptionsT("failed to insert timeline item with attachment as byte array")
+      .mapExceptionToLeft("failed to insert timeline item with attachment as byte array")
   } yield item
 
   def insertTimelineItemWithoutContent(credential: Credential, timelineItem: TimelineItem) = for {
@@ -135,7 +144,7 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       .timeline
       .insert(timelineItem)
       .execute
-      .catchExceptionsT("failed to insert timeline item with without content")
+      .mapExceptionToLeft("failed to insert timeline item with without content")
   } yield item
 
   def insertTimelineItemUsingStream(credential: Credential, timelineItem: TimelineItem, contentType: String, attachmentStream: InputStream) =
@@ -143,7 +152,7 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
 
   def insertTimelineItemUsingUrl(credential: Credential, timelineItem: TimelineItem, contentType: String, url: URL) = for {
     s <- url.openStream
-      .catchExceptionsT(s"unable to open stream for url $url")
+      .mapExceptionOrNullToLeft(s"unable to open stream for url $url")
     result <- insertTimelineItemUsingStream(credential, timelineItem, contentType, s)
   } yield result
 
@@ -153,21 +162,19 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       .setCollection(collection)
       .setCallbackUrl(callbackUrl)
       .setUserToken(userId)
-      .catchExceptionsT("failed to build subscription")
+      .mapExceptionOrNullToLeft("failed to build subscription")
     insertedSubscription <- mirror.subscriptions
       .insert(subscription)
       .execute
-      .catchExceptionsT("failed to insert subscription.")
+      .mapExceptionToLeft("failed to insert subscription.")
   } yield subscription
 
   def deleteSubscription(credential: Credential, subscriptionId: String) = for {
     mirror <- getMirror(credential)
     subs <- mirror.subscriptions
-      .catchExceptionsT("could not get subscriptions")
-    deleteThunk <- subs.delete(subscriptionId)
-      .catchExceptionsT("could not build delete subscription thunk")
-    _ <- deleteThunk.execute
-      .catchExceptionsT("executing delete command failed")
+      .delete(subscriptionId)
+      .execute
+      .mapExceptionToLeft("executing delete command failed")
   } yield ()
 
   def deleteContact(credential: Credential, id: String) = for {
@@ -176,7 +183,7 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       .contacts
       .delete(id)
       .execute
-      .catchExceptionsT(s"could not delete contact $id")
+      .mapExceptionToLeft(s"could not delete contact $id")
   } yield id
 
   def listContacts(credential: Credential) = for {
@@ -185,7 +192,7 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       .contacts
       .list
       .execute
-      .catchExceptionsT(s"could not list contacts")
+      .mapExceptionToLeft(s"could not list contacts")
   } yield contacts
 
   def getContact(credential: Credential, id: String) = for {
@@ -194,7 +201,7 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       .contacts
       .get(id)
       .execute
-      .catchExceptionsT(s"could not get contact $id")
+      .mapExceptionToLeft(s"could not get contact $id")
   } yield contact
 
   def listItems(credential: Credential, count: Int) = for {
@@ -204,7 +211,7 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       .list
       .setMaxResults(count)
       .execute
-      .catchExceptionsT(s"could not get mirror items")
+      .mapExceptionToLeft(s"could not get mirror items")
   } yield items
 
   def listSubscriptions(credential: Credential) = for {
@@ -213,13 +220,12 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       .subscriptions
       .list
       .execute
-      .catchExceptionsT(s"could not get mirror items")
+      .mapExceptionToLeft(s"could not get mirror items")
   } yield subscriptions
 
   def getBatch = for {
     mirror <- getMirror(null)
-    batch <- mirror
-      .batch
-      .catchExceptionsT("failed to create batch")
+    batch <- mirror.batch
+      .mapExceptionToLeft("failed to create batch")
   } yield batch
 }
