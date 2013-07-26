@@ -37,7 +37,6 @@ import com.google.api.services.mirror.model.Contact
 import com.google.api.services.mirror.model.TimelineItem
 import com.google.api.services.mirror.model.NotificationConfig
 import scala.PartialFunction._
-import com.google.glassware.MainServlet
 import com.seattleglassware.GlasswareTypes.stateTypes._
 import HttpRequestWrapper._
 import com.seattleglassware.Misc._
@@ -124,6 +123,8 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   val mirrorOps = inject[MirrorOps]
   import mirrorOps._
 
+  val CONTACT_NAME = "Scala Quick Start"
+    
   def startOAuth2Dance = for {
     _ <- pushComment("starting OAuth2 dance")
     flow <- newAuthorizationCodeFlow
@@ -176,8 +177,8 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
     imageUrls = List(catUrl.newRawPath("/static/images/chipotle-tube-640x360.jpg"))
 
     starterProjectContact <- (new Contact)
-      .setId(MainServlet.CONTACT_NAME)
-      .setDisplayName(MainServlet.CONTACT_NAME)
+      .setId(CONTACT_NAME)
+      .setDisplayName(CONTACT_NAME)
       .setImageUrls(imageUrls.map(_.toString).asJava)
       .mapExceptionOrNullToLeft("failed to create new contact")
 
