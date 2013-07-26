@@ -1,5 +1,7 @@
 package com.seattleglassware
 
+import java.io.InputStreamReader
+import java.io.BufferedReader
 import com.google.glassware.AuthUtil
 import scala.collection.JavaConverters._
 import com.escalatesoft.subcut.inject.BindingModule
@@ -49,6 +51,12 @@ import com.google.api.client.googleapis.batch.json.JsonBatchCallback
 import com.google.api.client.googleapis.json.GoogleJsonError
 import com.google.api.client.http.HttpHeaders
 import com.google.api.client.googleapis.batch.BatchRequest
+import java.util.concurrent.atomic.AtomicInteger
+import java.io.IOException
+import com.google.api.client.json.jackson.JacksonFactory
+import com.google.api.services.mirror.model.Notification
+import com.google.api.services.mirror.model.UserAction
+import com.google.api.client.auth.oauth2.Credential
 
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   import com.seattleglassware.GlasswareTypes.stateTypes._
@@ -158,7 +166,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   } yield ()
 
   def capableOfSubscriptions = false
-  
+
   def bootstrapNewUser(userId: String) = for {
     _ <- pushComment("bootstrapping new user")
 
@@ -211,27 +219,6 @@ class AuthServlet extends ServletInjectionShim()(ProjectConfiguration.configurat
 class MainServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
   val m = inject[MirrorOps]
 
-  class BatchCallback extends JsonBatchCallback[TimelineItem] {
-    override def onSuccess(t: TimelineItem, responseHeaders: HttpHeaders) = {
-
-    }
-
-    override def onFailure(error: GoogleJsonError, responseHeaders: HttpHeaders) = {
-
-    }
-  }
-
-  implicit class OrElseMessage[T](x: CombinedStateAndFailure[T]) {
-    def orElseMessage(s: String) = {
-      def prependStateMsg(e: EarlyReturn) = for {
-        _ <- addGlasswareEffect(LogAndIgnore(e))
-        _ <- addGlasswareEffect(AddMessage(s))
-      } yield ()
-      val ignoringRight = x.map(rightvalue => ())
-      transformLeft(ignoringRight)(error => prependStateMsg(error))
-    }
-  }
-
   def mainservletAction = for {
     operation <- getParameter("operation")
     _ <- pushComment(s"executing operation $operation")
@@ -250,8 +237,8 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
         insertItemWithAction orElseMessage "Failed to insert item"
       case "insertItemAllUsers" =>
         insertItemAllUsers orElseMessage "Failed to insert items for all users"
-      case unknownCommand => modifyGlasswareEffects(
-        xs => Comment(s"Unknown commmand $unknownCommand") :: AddMessage("I don't know how to do that") :: xs)
+      case s =>
+        unknownCommand(s)
     }
     _ <- redirectToNewPath("/", s"finished operation $operation")
   } yield ()
@@ -350,7 +337,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     _ <- message("Contact has been deleted.")
   } yield ()
 
-  def ifCondition(condition: => Boolean, result: CombinedStateAndFailure[_]) =
+  def ifCondition[T](condition: => Boolean, result: CombinedStateAndFailure[T]) =
     if (condition) result else noOp
 
   def ifOption[T, U](opt: => Option[T], result: T => CombinedStateAndFailure[U]): CombinedStateAndFailure[_] =
@@ -372,13 +359,24 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     _ <- queueTimelineInsertions(users, allUsersItem)
   } yield ()
 
+  class BatchCallback extends JsonBatchCallback[TimelineItem] {
+    val successCount = new AtomicInteger(0)
+    val failureCount = new AtomicInteger(0)
+
+    override def onSuccess(t: TimelineItem, responseHeaders: HttpHeaders) =
+      successCount.incrementAndGet
+
+    override def onFailure(error: GoogleJsonError, responseHeaders: HttpHeaders) =
+      failureCount.incrementAndGet
+  }
+
   def queueTimelineInsertions(users: List[String], allUsersItem: TimelineItem) = for {
     batch <- m.getBatch
     callback = new BatchCallback
     userIds <- users.foldLeft(zero)((acc, userid) => acc +++ queueTimelineInsertion(userid, allUsersItem, batch, callback))
     _ <- batch.execute
       .mapExceptionToLeft("failed to execute batch for inserting item for all users")
-    _ <- message(s"Successfully sent cards to ${callback.success} users + ${callback.failure} failed.")
+    _ <- message(s"Successfully sent cards to ${callback.successCount.get} users + ${callback.failureCount.get} failed.")
   } yield userIds
 
   def queueTimelineInsertion(userId: String, allUsersItem: TimelineItem, batch: BatchRequest, callback: BatchCallback) = for {
@@ -397,3 +395,118 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
 class MainServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
   override val implementationOfPost = (new MainServletSupport).mainservletAction
 }
+
+class NotifyServletImpl(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+  import bindingModule._
+
+  val jsonFactory = inject[JacksonFactory]
+  val m = inject[MirrorOps]
+
+  def handlePost = for {
+    _ <- pushEffect(SetResponseContentType("text/html"))
+    _ <- pushEffect(WriteText("OK"))
+    notificationReader <- getInputBufferedReader
+    // Count the lines as a very basic way to prevent Denial of Service attacks
+    notificationString <- readUpToNLines(notificationReader, 1000)
+      .mapExceptionToLeft("Attempted to parse notification payload that was unexpectedly long.")
+
+    _ <- pushComment("got raw notification " + notificationString)
+
+    notification <- jsonFactory.fromString(notificationString.toString, classOf[Notification])
+      .mapExceptionOrNullToLeft(s"could not build notification from $notificationString")
+
+    command <- notification.getCollection
+      .mapExceptionOrNullToLeft("could not get notification collection name")
+
+    _ <- pushComment(s"got command $command")
+
+    _ <- command match {
+      case "locations" =>
+        locations(notification) orElseMessage "could not update location"
+      case "timeline" =>
+        timeline(notification) orElseMessage "could not update timeline"
+      case s =>
+        unknownCommand(s)
+    }
+  } yield ()
+
+  def timeline(notification: Notification) = for {
+    credential <- getCredentialForNotification(notification)
+    mirror <- m.getMirror(credential)
+    timelineItem <- mirror.timeline
+      .get(notification.getItemId)
+      .execute
+      .mapExceptionToLeft("unable to get notification from timeline")
+    _ <- pushComment(s"Notification impacted timeline item with ID: ${timelineItem.getId}")
+    // If it was a share, and contains a photo, bounce it back to the user.
+    containsShareWithPhoto = (notification.getUserActions().contains(new UserAction().setType("SHARE"))
+      && timelineItem.getAttachments() != null && timelineItem.getAttachments().size() > 0)
+    _ <- if (containsShareWithPhoto)
+      sendPhotoBackToUser(timelineItem, credential)
+    else
+      noOp
+  } yield timelineItem
+
+  def sendPhotoBackToUser(timelineItem: TimelineItem, credential: Credential) = for {
+    mirror <- m.getMirror(credential)
+    _ <- pushComment("It was a share of a photo. Sending the photo back to the user.")
+    attachmentId = timelineItem.getAttachments().get(0).getId()
+    _ <- pushComment("Found attachment with ID " + attachmentId)
+    stream <- m.getAttachmentInputStream(credential, timelineItem.getId, attachmentId)
+    echoPhotoItem = (new TimelineItem).setText("Echoing your shared photo")
+    insertedItem <- m.insertTimelineItemUsingStream(credential, echoPhotoItem, "image/jpeg", stream)
+  } yield insertedItem
+
+  def locations(notification: Notification) = for {
+    credential <- getCredentialForNotification(notification)
+    mirror <- m.getMirror(credential)
+
+    location <- mirror.locations
+      .get(notification.getItemId)
+      .execute
+      .mapExceptionToLeft("could not get location")
+
+    _ <- pushComment(s"New location is ${location.getLatitude}, ${location.getLongitude}")
+
+    timelineItem <- (new TimelineItem())
+      .setText(s"You are now at ${location.getLatitude}, ${location.getLongitude}")
+      .setNotification(new NotificationConfig().setLevel("DEFAULT")).setLocation(location)
+      .setMenuItems(List((new MenuItem).setAction("NAVIGATE")).asJava)
+      .mapExceptionOrNullToLeft("could not build timeline item")
+
+    insertedItem <- m.insertTimelineItemWithoutContent(credential, timelineItem)
+  } yield insertedItem
+
+  def readUpToNLines(reader: scala.io.Source, n: Int) =
+    reader.getLines
+      .takeWhile(doAfterNTimes(n, throw new IOException("Attempted to parse notification payload that was unexpectedly long.")))
+      .foldLeft(new StringBuffer)((acc, s) => acc.append(s))
+
+  def notNull[T](t: T) = t != null
+
+  def doAfterNTimes[T](n: Int, ex: => Unit) = {
+    var i = 0
+    (s: T) => {
+      if (i >= n) ex
+      i += 1
+      true
+    }
+  }
+}
+
+class NotifyServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
+  override val implementationOfPost = (new NotifyServletImpl).handlePost
+}
+
+class SignOutServletImpl(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+  import bindingModule._
+
+  def handlePost = for {
+    _ <- addGlasswareEffect(SignOut)
+  } yield ()
+}
+
+class SignOutServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
+  override val implementationOfPost = (new SignOutServletImpl).handlePost
+}
+

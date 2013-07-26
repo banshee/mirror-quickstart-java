@@ -1,10 +1,8 @@
 package com.seattleglassware
 
 import scala.collection.JavaConverters.asScalaBufferConverter
-
 import com.escalatesoft.subcut.inject.BindingModule
 import com.google.api.client.http.GenericUrl
-
 import GlasswareTypes._
 import JavaInterop.asInstanceOfNotNull
 import JavaInterop.safelyCall
@@ -21,6 +19,7 @@ import scalaz.-\/
 import scalaz.\/-
 import scalaz.EitherT
 import scalaz.Bind
+import java.io.InputStream
 
 
 object Misc {
@@ -72,6 +71,7 @@ trait HttpRequestWrapper {
   def getRequestURI: String
   def getRequestGenericUrl: GenericUrl = new GenericUrl(getRequestURI)
   def getHostname = Option(getRequestGenericUrl.getHost) | ""
+  def getInputStream: InputStream
 }
 
 object HttpRequestWrapper {
@@ -94,6 +94,7 @@ object HttpRequestWrapper {
         NoSuchSessionAttribute(s).left,
         WrappedFailure(_).left)
     def getRequestURI = r.getRequestURL.toString
+    def getInputStream = r.getInputStream
   }
 }
 

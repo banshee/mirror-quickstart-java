@@ -116,6 +116,7 @@ class TestHttpRequestWrapper(url: String = "http://example.com/") extends HttpRe
   def getSessionAttribute[T](s: String): EarlyReturn \/ T =
     items.get(s).get.asInstanceOf[T].right[EarlyReturn]
   def getRequestURI: String = url
+  def getInputStream = throw new RuntimeException("not supported")
 }
 
 class TestStatefulParameterOperations extends FunSuite with Matchers with MockitoSugar {

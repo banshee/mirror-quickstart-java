@@ -51,7 +51,7 @@ limitations under the License.
 
   <servlet>
     <servlet-name>notify</servlet-name>
-    <servlet-class>com.google.glassware.NotifyServlet</servlet-class>
+    <servlet-class>com.seattleglassware.NotifyServlet</servlet-class>
   </servlet>
   <servlet-mapping>
     <servlet-name>notify</servlet-name>
@@ -69,7 +69,7 @@ limitations under the License.
 
   <servlet>
     <servlet-name>signout</servlet-name>
-    <servlet-class>com.google.glassware.SignOutServlet</servlet-class>
+    <servlet-class>com.seattleglassware.SignOutServlet</servlet-class>
   </servlet>
   <servlet-mapping>
     <servlet-name>signout</servlet-name>

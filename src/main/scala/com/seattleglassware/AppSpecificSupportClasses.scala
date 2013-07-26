@@ -36,6 +36,9 @@ import scalaz.{ \/ => \/ }
 import scalaz.{ \/- => \/- }
 import scalaz.Scalaz._
 import java.io.Closeable
+import java.io.InputStreamReader
+import java.io.BufferedReader
+import com.google.api.services.mirror.model.Notification
 
 object GlasswareTypes {
   val stateTypes = StateGenerator[GlasswareState, EarlyReturn]
@@ -65,7 +68,9 @@ object GlasswareTypes {
   case class WriteText(s: String) extends Effect
   case class LogAndIgnore(e: EarlyReturn) extends Effect
   case class SetSessionAttribute(name: String, value: String) extends Effect
+  case class RemoveSessionAttribute(name: String) extends Effect
   case class CleanupCloseable(x: Closeable) extends Effect
+  case object SignOut extends Effect
 
   implicit val partialMonoidForEarlyReturn = new Monoid[EarlyReturn] {
     case object NoOp extends EarlyReturn
@@ -118,6 +123,28 @@ trait StatefulParameterOperations extends Injectable {
 
   def wrapException[T](t: Throwable) = WrappedFailure(t).left[T]
   def wrapMissingParameter[T](s: String) = NoSuchParameter(s).left[T]
+
+  implicit class OrElseMessage[T](x: CombinedStateAndFailure[T]) {
+    def orElseMessage(s: String) = {
+      def prependStateMsg(e: EarlyReturn) = for {
+        _ <- addGlasswareEffect(LogAndIgnore(e))
+        _ <- addGlasswareEffect(AddMessage(s))
+      } yield ()
+      x.swap.flatMap(error => prependStateMsg(error).swap).swap
+    }
+  }
+
+  def unknownCommand(unknownCommand: String) = modifyGlasswareEffects(
+    xs => Comment(s"Unknown commmand $unknownCommand") :: AddMessage("I don't know how to do that") :: xs)
+
+  def getInputBufferedReader = for {
+    GlasswareState(request, _) <- getGlasswareState
+    inputStream <- request.getInputStream
+      .mapExceptionToLeft("could not open input stream for notification")
+    _ <- pushEffect(CleanupCloseable(inputStream))
+    source <- scala.io.Source.fromInputStream(inputStream)
+      .mapExceptionToLeft("could not create source from request input stream")
+  } yield source
 
   def getParameter(parameterName: String) = for {
     value <- getOptionalParameter(parameterName)
@@ -260,14 +287,31 @@ trait StatefulParameterOperations extends Injectable {
   } yield result
 
   def getCredential = for {
+    _ <- pushComment("getting credential (userId)")
     userId <- getUserId
+    _ <- pushComment("getting credential")
     credential <- getCredentialForSpecifiedUser(userId)
   } yield credential
+
+  def signout = for {
+    userId <- getUserId
+    credential <- getCredential
+    _ <- credentialStore
+      .delete(userId, credential)
+      .mapExceptionOrNullToLeft("could not delete credential from storage")
+    _ <- pushEffect(RemoveSessionAttribute("userId"))
+  } yield ()
 
   def getCredentialForSpecifiedUser(userId: String) = for {
     authorizationFlow <- newAuthorizationCodeFlow
     credential <- authorizationFlow.loadCredential(userId)
       .mapExceptionOrNullToLeft("error locating credential")
+  } yield credential
+
+  def getCredentialForNotification(notification: Notification) = for {
+    userId <- notification.getUserToken
+      .mapExceptionOrNullToLeft("could not get user id from notification")
+    credential <- getCredentialForSpecifiedUser(userId)
   } yield credential
 
   def clearUserId(userId: String) = for {
@@ -332,18 +376,22 @@ trait ServerPlumbing extends StatefulParameterOperations {
       ultimately(stream.close) {
         ByteStreams.copy(stream, resp.getOutputStream)
       }
-    case WriteText(s) => 
-      throw new RuntimeException("WriteText not yet implemented")
+    case WriteText(s) =>
+      val writer = resp.getWriter
+      writer.append("OK")
+      writer.close()
     case SetSessionAttribute(name, value) =>
       Option(req.getSession) map { _.setAttribute(name, value) }
+    case RemoveSessionAttribute(name) =>
+      Option(req.getSession) map { _.removeAttribute(name) }
     case AddMessage(m) =>
       Option(req.getSession) map { _.setAttribute("flash", m) }
-    case CleanupCloseable(c) => 
+    case CleanupCloseable(c) =>
       try {
         c.close
       } catch {
-        case e: java.io.IOException => 
+        case e: java.io.IOException =>
       }
-    case LogAndIgnore(_) | Comment(_) | PlaceholderEffect => // Do nothing
+    case SignOut | LogAndIgnore(_) | Comment(_) | PlaceholderEffect => // Do nothing
   }
 }
