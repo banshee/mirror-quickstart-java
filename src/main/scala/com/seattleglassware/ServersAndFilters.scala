@@ -27,7 +27,6 @@ import com.google.glassware.MirrorClient
 import com.google.glassware.NewUserBootstrapper
 import com.seattleglassware.GlasswareTypes._
 import com.seattleglassware.GlasswareTypes.stateTypes._
-import com.seattleglassware.Misc.GenericUrlWithNewScheme
 import com.seattleglassware.Misc._
 import java.io.BufferedReader
 import java.io.IOException

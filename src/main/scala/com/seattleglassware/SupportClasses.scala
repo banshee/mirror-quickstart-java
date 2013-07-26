@@ -1,11 +1,11 @@
 package com.seattleglassware
 
-import scala.collection.JavaConverters.asScalaBufferConverter
-import com.escalatesoft.subcut.inject.BindingModule
-import com.google.api.client.http.GenericUrl
 import GlasswareTypes._
 import JavaInterop.asInstanceOfNotNull
 import JavaInterop.safelyCall
+import com.escalatesoft.subcut.inject.BindingModule
+import com.google.api.client.http.GenericUrl
+import java.io.InputStream
 import javax.servlet.Filter
 import javax.servlet.FilterChain
 import javax.servlet.ServletRequest
@@ -13,13 +13,13 @@ import javax.servlet.ServletResponse
 import javax.servlet.http.HttpServlet
 import javax.servlet.http.HttpServletRequest
 import javax.servlet.http.HttpServletResponse
+import scala.collection.JavaConverters.asScalaBufferConverter
+import scalaz.-\/
+import scalaz.Bind
+import scalaz.EitherT
 import scalaz.Scalaz._
 import scalaz.\/
-import scalaz.-\/
 import scalaz.\/-
-import scalaz.EitherT
-import scalaz.Bind
-import java.io.InputStream
 
 
 object Misc {
