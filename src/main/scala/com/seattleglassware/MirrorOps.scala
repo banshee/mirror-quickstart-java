@@ -32,7 +32,6 @@ import com.seattleglassware.BindingIdentifiers._
 import com.seattleglassware.EitherTWithState._
 import com.seattleglassware.GlasswareTypes._
 import com.seattleglassware.GlasswareTypes.stateTypes._
-import com.seattleglassware.Misc.GenericUrlWithNewScheme
 import com.seattleglassware.Misc._
 import java.io.FileInputStream
 import java.io.InputStream

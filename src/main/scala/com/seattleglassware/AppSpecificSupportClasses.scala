@@ -22,7 +22,7 @@ import com.seattleglassware.BindingIdentifiers.GlassScope
 import com.seattleglassware.BindingIdentifiers.OAuthPropertiesFileLocation
 import com.seattleglassware.EitherTWithState._
 import com.seattleglassware.GlasswareTypes._
-import com.seattleglassware.Misc.GenericUrlWithNewScheme
+import com.seattleglassware.Misc._
 import HttpRequestWrapper.HttpServletRequestWrapper
 import JavaInterop.safelyCall
 import javax.servlet.FilterChain
@@ -130,7 +130,6 @@ trait StatefulParameterOperations extends Injectable {
     getSessionAttributeFromRequest(name).orElse(findSetSessionInState(name))
 
   import HttpRequestWrapper._
-  import com.seattleglassware.Misc.GenericUrlWithNewScheme
 
   def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = for {
     pathMatches <- urlPathMatches(fn, explanation)

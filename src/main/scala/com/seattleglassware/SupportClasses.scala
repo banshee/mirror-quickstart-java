@@ -23,9 +23,7 @@ import scalaz.\/
 import scalaz.\/-
 
 object Misc {
-  type =?>[A, B] = PartialFunction[A, B]
-
-  implicit class GenericUrlWithNewScheme(u: GenericUrl) {
+  implicit class RichGenericUrl(u: GenericUrl) {
     def newScheme(scheme: String) = {
       val result = u.clone
       result.setScheme(scheme)
@@ -44,15 +42,15 @@ object Misc {
     }
   }
   
-  import scala.language.higherKinds
-
-  def transformLeft[F[+_], A, B](x: => EitherT[F, A, B])(y: A => EitherT[F, A, B])(implicit F: Bind[F]): EitherT[F, A, B] = {
-    val g = x.run
-    EitherT(F.bind(g) {
-      case -\/(l) => y(l).run
-      case \/-(_) => g
-    })
-  }
+//  import scala.language.higherKinds
+//
+//  def transformLeft[F[+_], A, B](x: => EitherT[F, A, B])(y: A => EitherT[F, A, B])(implicit F: Bind[F]): EitherT[F, A, B] = {
+//    val g = x.run
+//    EitherT(F.bind(g) {
+//      case -\/(l) => y(l).run
+//      case \/-(_) => g
+//    })
+//  }
 
 }
 
