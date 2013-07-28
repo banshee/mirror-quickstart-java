@@ -38,11 +38,10 @@ import scalaz.MonadTrans
 import scalaz.Scalaz._
 import scalaz.State
 import scalaz.\/
-import com.seattleglassware.EitherTWithState._
-import GlasswareTypes._
+import com.seattleglassware.GlasswareTypes._
+import com.seattleglassware.GlasswareTypes.stateTypes._
 
 class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import stateTypes._
   import bindingModule._
 
   val mirrorOps = inject[MirrorOps]

@@ -1,6 +1,7 @@
 package com.seattleglassware
 
-import GlasswareTypes._
+import com.seattleglassware.GlasswareTypes._
+import com.seattleglassware.GlasswareTypes.stateTypes._
 import JavaInterop.asInstanceOfNotNull
 import JavaInterop.safelyCall
 import com.escalatesoft.subcut.inject.BindingModule
@@ -20,7 +21,6 @@ import scalaz.EitherT
 import scalaz.Scalaz._
 import scalaz.\/
 import scalaz.\/-
-
 
 object Misc {
   type =?>[A, B] = PartialFunction[A, B]
@@ -104,8 +104,6 @@ trait NonInitializedFilter extends Filter {
 }
 
 trait FilterScaffold { self: ServerPlumbing with Filter =>
-  import stateTypes._
-
   val filterImplementation: CombinedStateAndFailure[Unit]
 
   override def doFilter(req: ServletRequest, resp: ServletResponse, chain: FilterChain) =

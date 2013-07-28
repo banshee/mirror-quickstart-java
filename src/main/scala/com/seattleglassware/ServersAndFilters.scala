@@ -1,8 +1,5 @@
 package com.seattleglassware
 
-import GlasswareTypes._
-import GlasswareTypes.stateTypes.CombinedStateAndFailure
-import HttpRequestWrapper._
 import JavaInterop.safelyCall
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
@@ -41,8 +38,6 @@ import scalaz.StateT
 import scalaz._
 
 class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import com.seattleglassware.GlasswareTypes.stateTypes._
-
   import bindingModule._
 
   def appspotHttpsCheck = for {

@@ -62,7 +62,6 @@ import scalaz.\/-
 class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable with StatefulParameterOperations {
   import com.seattleglassware.Misc._
   import HttpRequestWrapper._
-  import stateTypes._
 
   private lazy val urlFetchTransport = inject[UrlFetchTransport]
   private lazy val jacksonFactory = inject[JacksonFactory]
