@@ -119,68 +119,6 @@ class TestHttpRequestWrapper(url: String = "http://example.com/") extends HttpRe
   def getInputStream = throw new RuntimeException("not supported")
 }
 
-class TestStatefulParameterOperations extends FunSuite with Matchers with MockitoSugar {
-  import stateTypes._
-
-  class TestClassForState(implicit val bindingModule: BindingModule) extends StatefulParameterOperations {
-    import com.seattleglassware.Misc._
-    
-    def failingShark: CombinedStateAndFailure[Int] = for {
-      x <- pushComment("shark")
-      _ <- FailedCondition("something").liftState
-    } yield 1
-
-    def succeedingShark: CombinedStateAndFailure[Int] = for {
-      x <- pushComment("shark")
-    } yield 2
-
-    def failThenSucceed = for {
-      a <- failingShark
-      b <- succeedingShark
-    } yield 3
-
-    def succeedingBait: CombinedStateAndFailure[Int] = for {
-      _ <- pushComment("bait")
-    } yield 2
-
-    def transformingSharkToBait = for {
-      x <- transformLeft(failingShark)(x => succeedingBait)
-    } yield x
-
-    def failingBait: CombinedStateAndFailure[Int] = for {
-      _ <- pushComment("bait")
-      _ <- YieldToNextFilter.liftState
-    } yield 2
-  }
-
-  test("fail followed by succeed sets state correctly") {
-    val tc = new TestClassForState()(TestBindings.configuration)
-    val (GlasswareState(_, items), result) = tc.failThenSucceed.run(TestBindings.defaultEmptyGlasswareState)
-    items should be(List("shark") map Comment)
-    cond(result) {
-      case -\/(FailedCondition("something")) => true
-    } should be(true)
-  }
-
-  test("fail followed by a transform sets state correctly") {
-    val tc = new TestClassForState()(TestBindings.configuration)
-    val (GlasswareState(_, items), result) = tc.transformingSharkToBait.run(TestBindings.defaultEmptyGlasswareState)
-    items should be(List("bait", "shark") map Comment)
-    cond(result) {
-      case \/-(2) => true
-    } should be(true)
-  }
-
-  test("can set user id") {
-    val tc = new TestClassForState()(TestBindings.configuration)
-    val (GlasswareState(_, items), result) = tc.setUserId("myuid").run(TestBindings.defaultEmptyGlasswareState)
-    items should be(List(SetSessionAttribute("userId", "myuid")))
-    cond(result) {
-      case \/-(_) => true
-    } should be(true)
-  }
-}
-
 @RunWith(classOf[JUnitRunner])
 class AttachmentProxyServletTests extends FunSuite with Matchers {
   test("can run AttachmentProxyServlet") {
