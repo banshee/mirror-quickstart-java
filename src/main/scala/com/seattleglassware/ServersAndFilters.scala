@@ -102,7 +102,7 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   import mirrorOps._
 
   val CONTACT_NAME = "Scala Quick Start"
-    
+
   def startOAuth2Dance = for {
     _ <- pushComment("starting OAuth2 dance")
     flow <- newAuthorizationCodeFlow
@@ -176,17 +176,15 @@ class AuthServletSupport(implicit val bindingModule: BindingModule) extends Stat
   } yield subscription
 
   def authServletAction = for {
-    _ <- ifAll(
-      predicates = List(parameterExists("error")),
-      trueEffects = req => List(
-        Comment("error parameter exists"),
+    error <- getOptionalParameter("error")
+    _ <- if (error.isDefined)
+      addGlasswareEffects(Comment("error parameter exists"),
         SetResponseContentType("text/plain"),
-        WriteText("\"Something went wrong during auth. Please check your log for details\"")),
-      trueResult = FailedCondition("The error parameter is set").left,
-      falseResult = ().right)
+        WriteText("\"Something went wrong during auth. Please check your log for details\""))
+    else
+      noOp
 
     code <- getOptionalParameter("code")
-
     result <- code.fold(startOAuth2Dance)(finishOAuth2Dance(_))
   } yield result
 }
@@ -200,7 +198,9 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
 
   def mainservletAction = for {
     operation <- getParameter("operation")
+
     _ <- pushComment(s"executing operation $operation")
+
     _ <- operation match {
       case "insertSubscription" =>
         insertSubscription orElseMessage "Failed to subscribe. Check your log for details"
@@ -219,6 +219,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       case s =>
         unknownCommand(s)
     }
+
     _ <- redirectToNewPath("/", s"finished operation $operation")
   } yield ()
 
@@ -227,7 +228,9 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       (new TimelineItem)
       .setText("Tell me what you had for lunch :)"))
       .mapExceptionOrNullToLeft("failed to create TimelineItem object")
+
     drillImageUrl <- getGenericUrlWithNewPath("/static/images/drill.png")
+
     menuValues = List(
       (new MenuValue)
         .setIconUrl(drillImageUrl.toString)
@@ -236,10 +239,12 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       (new MenuItem).setAction("REPLY"),
       (new MenuItem).setAction("READ_ALOUD"),
       (new MenuItem).setValues(menuValues.asJava).setId("drill").setAction("CUSTOM"))
+
     timelineItem <- timelineItem
       .setMenuItems(menuItemList.asJava)
       .setNotification((new NotificationConfig).setLevel("DEFAULT"))
       .mapExceptionOrNullToLeft("could not build timeline item")
+
     userId <- getUserId
     credential <- getCredential
     insertedTimelineItem <- m.insertTimelineItemWithoutContent(credential, timelineItem)
@@ -301,7 +306,7 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
       .mapExceptionOrNullToLeft("could not build contact")
     _ <- m.insertContact(credential, contact)
     _ <- message(s"Inserted contact: $name")
-  } yield 1
+  } yield ()
 
   def deleteSubscription = for {
     credential <- getCredential
@@ -325,13 +330,17 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
   def insertItemAllUsers = for {
     url <- getGenericUrl
 
-    _ <- ifCondition(url.getHost.contains("glass-java-starter-demo.appspot.com"),
-      FinishedProcessing("This function is disabled on the demo instance").exitProcessing)
+    _ <- if (url.getHost.contains("glass-java-starter-demo.appspot.com"))
+      FinishedProcessing("This function is disabled on the demo instance").exitProcessing
+    else
+      noOp
 
     users = AuthUtil.getAllUserIds.asScala.toList
 
-    _ <- ifCondition(users.size > 10,
-      FailedCondition("too many users").failure)
+    _ <- if (users.size > 10)
+      FailedCondition("too many users").failure
+    else
+      noOp
 
     allUsersItem = (new TimelineItem).setText("Hello Everyone!")
 
@@ -339,36 +348,36 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
   } yield ()
 
   class BatchCallback extends JsonBatchCallback[TimelineItem] {
-    val successCount = new AtomicInteger(0)
-    val failureCount = new AtomicInteger(0)
+    var successCount = 0
+    var failureCount = 0
 
     override def onSuccess(t: TimelineItem, responseHeaders: HttpHeaders) =
-      successCount.incrementAndGet
+      successCount += 1
 
     override def onFailure(error: GoogleJsonError, responseHeaders: HttpHeaders) =
-      failureCount.incrementAndGet
+      failureCount += 1
   }
 
   def queueTimelineInsertions(users: List[String], allUsersItem: TimelineItem) = for {
     batch <- m.getBatch
     callback = new BatchCallback
-    userIds <- users.foldLeft(zero)((acc, userid) => acc +++ queueTimelineInsertion(userid, allUsersItem, batch, callback))
+    userIds <- users.foldLeft(emptyStringListWithState)((acc, userid) => acc +++ queueTimelineInsertion(userid, allUsersItem, batch, callback))
     _ <- batch.execute
       .mapExceptionToLeft("failed to execute batch for inserting item for all users")
-    _ <- message(s"Successfully sent cards to ${callback.successCount.get} users + ${callback.failureCount.get} failed.")
+    _ <- message(s"Successfully sent cards to ${callback.successCount} users + ${callback.failureCount} failed.")
   } yield userIds
 
-  def queueTimelineInsertion(userId: String, allUsersItem: TimelineItem, batch: BatchRequest, callback: BatchCallback) = for {
+  def queueTimelineInsertion(userId: String, item: TimelineItem, batch: BatchRequest, callback: BatchCallback) = for {
     credential <- m.getCredentialForSpecifiedUser(userId)
     mirror <- m.getMirror(credential)
     result <- mirror
       .timeline
-      .insert(allUsersItem)
+      .insert(item)
       .queue(batch, callback)
       .mapExceptionToLeft("unable to create batch timeline item")
   } yield List(userId) // yielding a List[String] so I can use +++ to combine the EitherT items in queueTimelineInsertions
 
-  val zero = EitherT(Applicative[StateWithFixedStateType].point(List.empty[String].right[EarlyReturn]))
+  val emptyStringListWithState = EitherT(Applicative[StateWithFixedStateType].point(List.empty[String].right[EarlyReturn]))
 }
 
 class MainServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
@@ -389,7 +398,7 @@ class NotifyServletImpl(implicit val bindingModule: BindingModule) extends State
     notificationString <- readUpToNLines(notificationReader, 1000)
       .mapExceptionToLeft("Attempted to parse notification payload that was unexpectedly long.")
 
-    _ <- pushComment("got raw notification " + notificationString)
+    _ <- pushComment(s"got raw notification $notificationString")
 
     notification <- jsonFactory.fromString(notificationString.toString, classOf[Notification])
       .mapExceptionOrNullToLeft(s"could not build notification from $notificationString")
@@ -418,9 +427,9 @@ class NotifyServletImpl(implicit val bindingModule: BindingModule) extends State
       .mapExceptionToLeft("unable to get notification from timeline")
     _ <- pushComment(s"Notification impacted timeline item with ID: ${timelineItem.getId}")
     // If it was a share, and contains a photo, bounce it back to the user.
-    containsShareWithPhoto = (notification.getUserActions().contains(new UserAction().setType("SHARE"))
-      && timelineItem.getAttachments() != null && timelineItem.getAttachments().size() > 0)
-    _ <- if (containsShareWithPhoto)
+    containsShare = notification.getUserActions.contains((new UserAction).setType("SHARE"))
+    atLeastOneAttachment = !(getTimelineItemAttachments(timelineItem).isEmpty)
+    _ <- if (containsShare && atLeastOneAttachment)
       sendPhotoBackToUser(timelineItem, credential)
     else
       noOp
@@ -429,12 +438,19 @@ class NotifyServletImpl(implicit val bindingModule: BindingModule) extends State
   def sendPhotoBackToUser(timelineItem: TimelineItem, credential: Credential) = for {
     mirror <- m.getMirror(credential)
     _ <- pushComment("It was a share of a photo. Sending the photo back to the user.")
-    attachmentId = timelineItem.getAttachments().get(0).getId()
+    attachmentId = getTimelineItemAttachments(timelineItem).head.getId
     _ <- pushComment("Found attachment with ID " + attachmentId)
     stream <- m.getAttachmentInputStream(credential, timelineItem.getId, attachmentId)
     echoPhotoItem = (new TimelineItem).setText("Echoing your shared photo")
     insertedItem <- m.insertTimelineItemUsingStream(credential, echoPhotoItem, "image/jpeg", stream)
   } yield insertedItem
+
+  def getTimelineItemAttachments(t: TimelineItem) = {
+    for {
+      verifiedTimelineItem <- Option(t)
+      attachments <- Option(verifiedTimelineItem.getAttachments)
+    } yield attachments.asScala.toList
+  } getOrElse List.empty
 
   def locations(notification: Notification) = for {
     credential <- getCredentialForNotification(notification)
@@ -477,15 +493,7 @@ class NotifyServlet extends ServletInjectionShim()(ProjectConfiguration.configur
   override val implementationOfPost = (new NotifyServletImpl).handlePost
 }
 
-class SignOutServletImpl(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
-  import bindingModule._
-
-  def handlePost = for {
-    _ <- addGlasswareEffect(SignOut)
-  } yield ()
-}
-
 class SignOutServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
-  override val implementationOfPost = (new SignOutServletImpl).handlePost
+  override val implementationOfPost = addGlasswareEffect(SignOut)
 }
 

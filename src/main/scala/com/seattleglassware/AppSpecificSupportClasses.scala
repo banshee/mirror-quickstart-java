@@ -2,6 +2,7 @@ package com.seattleglassware
 
 import java.io.FileInputStream
 import java.io.InputStream
+import java.util.logging.Logger
 import java.util.Properties
 import scala.collection.JavaConversions.seqAsJavaList
 import scala.collection.JavaConverters.collectionAsScalaIterableConverter
@@ -43,9 +44,6 @@ import com.google.api.services.mirror.model.Notification
 import com.seattleglassware.GlasswareTypes.stateTypes._
 
 trait StatefulParameterOperations extends Injectable {
-  import com.seattleglassware.Misc._
-  import HttpRequestWrapper._
-
   implicit val bindingModule: BindingModule
 
   private val oauthPropertiesFileLocation = inject[String](OAuthPropertiesFileLocation)
@@ -55,16 +53,13 @@ trait StatefulParameterOperations extends Injectable {
   private val glassScope = inject[String](GlassScope)
   private val applicationName = inject[String](ApplicationName)
 
-  def wrapException[T](t: Throwable) = WrappedFailure(t).left[T]
-  def wrapMissingParameter[T](s: String) = NoSuchParameter(s).left[T]
-
   implicit class OrElseMessage[T](x: CombinedStateAndFailure[T]) {
+    private def insertStateMessage(e: EarlyReturn, s: String) = for {
+      _ <- addGlasswareEffect(LogAndIgnore(e))
+      _ <- addGlasswareEffect(AddMessage(s))
+    } yield ()
     def orElseMessage(s: String) = {
-      def prependStateMsg(e: EarlyReturn) = for {
-        _ <- addGlasswareEffect(LogAndIgnore(e))
-        _ <- addGlasswareEffect(AddMessage(s))
-      } yield ()
-      x.swap.flatMap(error => prependStateMsg(error).swap).swap
+      x.swap.flatMap(error => insertStateMessage(error, s).swap).swap
     }
   }
 
@@ -80,36 +75,66 @@ trait StatefulParameterOperations extends Injectable {
       .mapExceptionToLeft("could not create source from request input stream")
   } yield source
 
+  /**
+   * Returns the value of the http parameter.
+   *
+   * Fails if it coulnd't get the parameter value.
+   *
+   * @param parameterName Name of the parameter
+   */
   def getParameter(parameterName: String) = for {
     value <- getOptionalParameter(parameterName)
     result <- value.get
       .mapExceptionOrNullToLeft(s"could not get parameter $parameterName")
   } yield result
 
+  /**
+   * Returns the value of an http parameter as an Option[String].
+   *
+   * @param parameterName Name of the parameter
+   */
   def getOptionalParameter(parameterName: String): CombinedStateAndFailure[Option[String]] = for {
     GlasswareState(req, _) <- getGlasswareState
     parameterValue <- req.getParameter(parameterName).right[EarlyReturn].liftState
   } yield parameterValue
 
+  /**
+   * Pushes the given [[com.seattleglassware.GlasswareTypes.Effect]]
+   * onto the state.
+   */
   def pushEffect(e: Effect) = for {
     GlasswareState(req, items) <- getGlasswareState
     _ <- put(GlasswareState(req, e :: items)).liftState
   } yield ()
 
+  /**
+   * Pushes the given string onto the state as a
+   * [[com.seattleglassware.GlasswareTypes.Comment]].
+   */
   def pushComment(s: String) = pushEffect(Comment(s))
 
   def getUserId = getSessionAttribute("userId")
 
   def getGlasswareState = get[GlasswareState].liftState
 
+  /**
+   * Note: most of the time, use addGlasswareEffect to add
+   * an effect to the state.
+   */
   def modifyGlasswareState(s: GlasswareState => GlasswareState) =
     modify[GlasswareState](s).liftState
 
+  /**
+   * Note: most of the time, use addGlasswareEffect to add
+   * an effect to the state.
+   */
   def modifyGlasswareEffects(s: List[Effect] => List[Effect]) = for {
     _ <- modifyGlasswareState(x => effectsThroughGlasswareState.mod(s, x))
   } yield ()
 
   def addGlasswareEffect(e: Effect) = modifyGlasswareEffects(xs => e :: xs)
+  def addGlasswareEffects(es: Effect*) = modifyGlasswareEffects(xs => es.toList ++ xs)
+
   def message(s: String) = addGlasswareEffect(AddMessage(s))
 
   def findSetSessionInState(name: String) = for {
@@ -124,12 +149,8 @@ trait StatefulParameterOperations extends Injectable {
     x <- req.getSessionAttribute[String](attributeName).liftState
   } yield x
 
-  //  def getSessionAttribute(name: String) =
-  //    findSetSessionInState(name) orElse getSessionAttributeFromRequest(name)
   def getSessionAttribute(name: String) =
-    getSessionAttributeFromRequest(name).orElse(findSetSessionInState(name))
-
-  import HttpRequestWrapper._
+    getSessionAttributeFromRequest(name) orElse findSetSessionInState(name)
 
   def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = for {
     pathMatches <- urlPathMatches(fn, explanation)
@@ -153,8 +174,6 @@ trait StatefulParameterOperations extends Injectable {
         val alltrue = predicates.forall { _(req) }
         if (alltrue) (GlasswareState(req, trueEffects(req).reverse ++ effects), trueResult) else (state, falseResult)
     })
-
-  import scala.collection.JavaConverters._
 
   def getGenericUrl = for {
     GlasswareState(req, _) <- getGlasswareState
@@ -259,22 +278,16 @@ object SessionAttributes {
   val USERID = "userId"
 }
 
-trait ServerPlumbing extends StatefulParameterOperations {
-  import stateTypes._
+trait ServerPlumbing extends StatefulParameterOperations with Injectable {
   implicit val bindingModule: BindingModule
 
+  val log = inject[java.util.logging.Logger]
+  
   def doServerPlumbing[T](req: HttpServletRequest, resp: HttpServletResponse, s: CombinedStateAndFailure[T]) = {
-    try {
-      val (state, result) = s.run(GlasswareState(req))
-      val effects = effectsThroughGlasswareState.get(state)
-      executeEffects(effects, req, resp, None, result)
-      executeResult(result, req, resp, None)
-    } catch {
-      case e: Throwable =>
-        println(s"snark! $e")
-        println("got runtimeexception: ////")
-        e.printStackTrace
-    }
+    val (state, result) = s.run(GlasswareState(req))
+    val effects = effectsThroughGlasswareState.get(state)
+    executeEffects(effects, req, resp, None, result)
+    executeResult(result, req, resp, None)
   }
 
   def doFilterPlumbing[T](req: ServletRequest, resp: ServletResponse, chain: FilterChain, s: CombinedStateAndFailure[T]): Unit = {
@@ -297,7 +310,7 @@ trait ServerPlumbing extends StatefulParameterOperations {
 
   def executeEffects[T](effects: List[Effect], req: HttpServletRequest, resp: HttpServletResponse, chain: Option[FilterChain], result: EarlyReturn \/ T) = {
     val requrl = req.getRequestURL().toString
-    println(s"Run request =====\nearlyReturn: $result\ndoeffects:\n$requrl\n$effects\n========")
+    log.info(s"Run request =====\nearlyReturn: $result\ndoeffects:\n$requrl\n$effects\n========")
     effects.reverse foreach executeEffect(req, resp, chain, result)
   }
 

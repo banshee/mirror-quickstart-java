@@ -83,18 +83,15 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
     _ <- pushEffect(CleanupCloseable(content))
   } yield content
 
-  def getAttachmentMetadata(mirror: Mirror, timelineItemId: String, attachmentId: String) = {
-    for {
-      attachments <- mirror
-        .timeline
-        .attachments
-        .mapExceptionOrNullToLeft("Failed to get attachments")
-      attachmentsRequest <- attachments.get(timelineItemId, attachmentId)
-        .mapExceptionOrNullToLeft("error creating attachments request")
-      attachmentsMetadata <- attachmentsRequest.execute
-        .mapExceptionToLeft("error executing attachments fetch")
-    } yield attachmentsMetadata
-  }
+  def getAttachmentMetadata(mirror: Mirror, timelineItemId: String, attachmentId: String) = for {
+    attachments <- mirror.timeline
+      .attachments
+      .mapExceptionOrNullToLeft("Failed to get attachments")
+    attachmentsRequest <- attachments.get(timelineItemId, attachmentId)
+      .mapExceptionOrNullToLeft("error creating attachments request")
+    attachmentsMetadata <- attachmentsRequest.execute
+      .mapExceptionToLeft("error executing attachments fetch")
+  } yield attachmentsMetadata
 
   def getMirror(credential: Credential) = for {
     result <- new Mirror.Builder(urlFetchTransport, jacksonFactory, credential)
@@ -105,11 +102,8 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
 
   def getAttachmentContentType(mirror: Mirror, timelineItemId: String, attachmentId: String) = for {
     metadata <- getAttachmentMetadata(mirror, timelineItemId, attachmentId)
-    // note that null means no content type,
-    // but if you're calling this method then no content type
-    // is fatal
     contentType <- metadata.getContentType
-      .mapExceptionToLeft("no content type")
+      .mapExceptionToLeft("cannot get content type")
   } yield contentType
 
   def insertContact(credential: Credential, contact: Contact) = for {
@@ -124,8 +118,7 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
     mirror <- getMirror(credential)
     contentBytes <- (new ByteArrayContent(contentType, attachmentData))
       .mapExceptionOrNullToLeft("unable to build content for attachment")
-    item <- mirror
-      .timeline
+    item <- mirror.timeline
       .insert(timelineItem, contentBytes)
       .execute
       .mapExceptionToLeft("failed to insert timeline item with attachment as byte array")
@@ -140,8 +133,11 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       .mapExceptionToLeft("failed to insert timeline item with without content")
   } yield item
 
-  def insertTimelineItemUsingStream(credential: Credential, timelineItem: TimelineItem, contentType: String, attachmentStream: InputStream) =
-    insertTimelineItem(credential, timelineItem, contentType, ByteStreams.toByteArray(attachmentStream))
+  def insertTimelineItemUsingStream(credential: Credential, timelineItem: TimelineItem, contentType: String, attachmentStream: InputStream) = for {
+    byteArray <- ByteStreams.toByteArray(attachmentStream)
+      .mapExceptionOrNullToLeft("could not create byte array for timeline item from stream")
+    _ <- insertTimelineItem(credential, timelineItem, contentType, byteArray)
+  } yield ()
 
   def insertTimelineItemUsingUrl(credential: Credential, timelineItem: TimelineItem, contentType: String, url: URL) = for {
     s <- url.openStream

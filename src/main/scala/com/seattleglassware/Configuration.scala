@@ -6,6 +6,7 @@ import com.google.api.client.extensions.appengine.http.UrlFetchTransport
 import com.google.api.client.json.jackson.JacksonFactory
 import BindingIdentifiers._
 import java.util.Properties
+import java.util.logging.Logger
 import com.google.api.client.auth.oauth2.CredentialStore
 import com.google.glassware.ListableAppEngineCredentialStore
 import com.google.api.client.auth.oauth2.Credential.AccessMethod
@@ -38,6 +39,7 @@ object UniversalBindings {
       "https://www.googleapis.com/auth/glass.location " +
       "https://www.googleapis.com/auth/userinfo.profile"
     bind[MirrorOps] toSingle (new MirrorOps()(module))
+    bind[Logger] toSingle (Logger.getLogger("com.seattleglassware"))
   }
 }
 
