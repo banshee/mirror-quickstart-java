@@ -262,6 +262,20 @@ trait StatefulParameterOperations extends Injectable {
   } yield deleted
 
   def setUserId(uid: String) = pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
+
+  def readUpToNLines(reader: scala.io.Source, n: Int) =
+    reader.getLines
+      .takeWhile(doAfterNTimes(n, throw new IOException("too many executions")))
+      .foldLeft(new StringBuffer)((acc, s) => acc.append(s))
+
+  def doAfterNTimes[T](n: Int, ex: => Unit) = {
+    var i = 0
+    (s: T) => {
+      if (i >= n) ex
+      i += 1
+      true
+    }
+  }
 }
 
 object SessionAttributes {

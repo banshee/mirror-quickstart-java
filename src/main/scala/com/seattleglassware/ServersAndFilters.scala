@@ -472,21 +472,6 @@ class NotifyServletImpl(implicit val bindingModule: BindingModule) extends State
     insertedItem <- m.insertTimelineItemWithoutContent(credential, timelineItem)
   } yield insertedItem
 
-  def readUpToNLines(reader: scala.io.Source, n: Int) =
-    reader.getLines
-      .takeWhile(doAfterNTimes(n, throw new IOException("Attempted to parse notification payload that was unexpectedly long.")))
-      .foldLeft(new StringBuffer)((acc, s) => acc.append(s))
-
-  def notNull[T](t: T) = t != null
-
-  def doAfterNTimes[T](n: Int, ex: => Unit) = {
-    var i = 0
-    (s: T) => {
-      if (i >= n) ex
-      i += 1
-      true
-    }
-  }
 }
 
 class NotifyServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
