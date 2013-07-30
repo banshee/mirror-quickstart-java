@@ -96,11 +96,11 @@ class AuthUtilTests extends FunSuite with Matchers with MockitoSugar {
 class AuthServletSupportTest extends FunSuite with Matchers with MockitoSugar {
   test("can finish oauth2 dance") {
     // Don't have a good test for this now since it hits google servers
-    implicit val tbindings = TestBindings.configurationWithAuthorizedTestUser
-    val auth = new AuthServletSupport
-    val q = for {
-      s <- auth.finishOAuth2Dance("code")
-    } yield ()
+//    implicit val tbindings = TestBindings.configurationWithAuthorizedTestUser
+//    val auth = new AuthServletSupport
+//    val q = for {
+//      s <- auth.finishOAuth2Dance("code")
+//    } yield ()
 //    val (state, result) = q.run.run(TestBindings.defaultEmptyGlasswareState)
 //    cond(result) {
 //      case -\/(WrappedFailure(_, _)) => true

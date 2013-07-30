@@ -37,150 +37,7 @@ import scalaz.State
 import scalaz.StateT
 import scalaz._
 
-class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with AppSupport {
-  import bindingModule._
-
-  def authenticationCheck = for {
-    _ <- pushComment("start AuthFilter authentication check")
-    _ <- appspotHttpsCheck
-    _ <- middleOfAuthFlowCheck
-    _ <- isRobotCheck
-    _ <- getAccessToken
-    _ <- pushComment("finished authentication check")
-    _ <- YieldToNextFilter.liftState
-  } yield ()
-
-  def appspotHttpsCheck = for {
-    hostnameMatches <- hostnameMatches(_.contains("appspot.com"))
-    isInsecure <- urlComponentMatches(_.getScheme)(_ == "http", "failed to get http scheme")
-    redirectRequired <- if (hostnameMatches && isInsecure) redirectToHttps else noOp
-  } yield ()
-
-  def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "in middle of oauth2 callback")
-
-  def isRobotCheck = yieldToNextFilterIfFirstElementOfPathMatches("notify", "Skipping auth check for notify servlet")
-
-  def getAccessToken: CombinedStateAndFailure[String] = {
-    val tokenFetcher = for {
-      userId <- getUserId
-      credential <- getCredential
-      accessToken <- safelyCall(credential.getAccessToken)(
-        returnedValid = _.right[EarlyReturn],
-        returnedNull = FailedCondition("no access token").left,
-        threwException = t => WrappedFailure(t).left).liftState
-    } yield accessToken
-
-    // The first computation can fail with a left value.  If that
-    // happens, redirect to /oauth2callback
-
-    for {
-      failureUrl <- getGenericUrlWithNewPath("/oauth2callback")
-      result <- tokenFetcher.leftMap(error => ExecuteRedirect(failureUrl, "failed to get access token"))
-    } yield result
-  }
-}
-
-class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
-  val filterImplementation = (new AuthFilterSupport).authenticationCheck
-}
-
-class AuthServletSupport(implicit val bindingModule: BindingModule) extends AppSupport {
-  val mirrorOps = inject[MirrorOps]
-  import mirrorOps._
-
-  val CONTACT_NAME = "Scala Quick Start"
-
-  def startOAuth2Dance = for {
-    _ <- pushComment("starting OAuth2 dance")
-    flow <- newAuthorizationCodeFlow
-    redirectUrl <- getGenericUrlWithNewPath("/oauth2callback")
-    authorizationCodeRequestUrl <- flow.newAuthorizationUrl
-      .setRedirectUri(redirectUrl.toString)
-      .set("approval_prompt", "force")
-      .mapExceptionOrNullToLeft("failed to create new authorization url")
-
-    _ <- ExecuteRedirect(authorizationCodeRequestUrl, "continuing oauth2 dance by redirecting to the remote auth url").liftState
-  } yield ()
-
-  def finishOAuth2Dance(code: String) = for {
-    _ <- pushComment("finishing OAuth2 dance")
-
-    flow <- newAuthorizationCodeFlow
-    oauth2callbackUrl <- getGenericUrlWithNewPath("/oauth2callback")
-
-    tokenResponse <- flow.newTokenRequest(code)
-      .setRedirectUri(oauth2callbackUrl.toString)
-      .execute
-      .mapExceptionToLeft("newTokenRequest failed")
-
-    userId <- tokenResponse.asInstanceOf[GoogleTokenResponse]
-      .parseIdToken
-      .getPayload
-      .getUserId
-      .mapExceptionToLeft("extracting userid from google token response failed")
-
-    _ <- pushComment("Code exchange worked. User " + userId + " logged in.")
-
-    _ <- setUserId(userId)
-
-    responseToken <- flow.createAndStoreCredential(tokenResponse, userId)
-      .mapExceptionOrNullToLeft("createAndStoreCredential failed")
-
-    _ <- bootstrapNewUser(userId)
-
-    _ <- redirectToNewPath("/", "finished oauth2 dance")
-  } yield ()
-
-  def capableOfSubscriptions = false
-
-  def bootstrapNewUser(userId: String) = for {
-    _ <- pushComment("bootstrapping new user")
-
-    credential <- getCredential
-
-    catUrl <- getGenericUrl
-    imageUrls = List(catUrl.newRawPath("/static/images/chipotle-tube-640x360.jpg"))
-
-    starterProjectContact <- (new Contact)
-      .setId(CONTACT_NAME)
-      .setDisplayName(CONTACT_NAME)
-      .setImageUrls(imageUrls.map(_.toString).asJava)
-      .mapExceptionOrNullToLeft("failed to create new contact")
-
-    insertedContact <- insertContact(credential, starterProjectContact).liftState
-    subscription <- if (capableOfSubscriptions)
-      insertSubscription(
-        credential,
-        catUrl.newRawPath("/notify").toString,
-        userId,
-        "timeline")
-    else noOp
-
-    timelineItem <- (new TimelineItem)
-      .setText("Welcome to the Glass Java Quick Start")
-      .setNotification(new NotificationConfig().setLevel("DEFAULT"))
-      .liftState
-  } yield subscription
-
-  def authServletAction = for {
-    error <- getOptionalParameter("error")
-    _ <- if (error.isDefined)
-      addGlasswareEffects(Comment("error parameter exists"),
-        SetResponseContentType("text/plain"),
-        WriteText("\"Something went wrong during auth. Please check your log for details\""))
-    else
-      noOp
-
-    code <- getOptionalParameter("code")
-    result <- code.fold(startOAuth2Dance)(finishOAuth2Dance(_))
-  } yield result
-}
-
-class AuthServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
-  override val implementationOfGet = (new AuthServletSupport).authServletAction
-}
-
-class MainServletSupport(implicit val bindingModule: BindingModule) extends AppSupport {
+class MainServletImplementation(implicit val bindingModule: BindingModule) extends AppSupport {
   val m = inject[MirrorOps]
 
   def mainservletAction = for {
@@ -361,11 +218,142 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends AppS
   val emptyStringListWithState = EitherT(Applicative[StateWithFixedStateType].point(List.empty[String].right[EarlyReturn]))
 }
 
-class MainServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
-  override val implementationOfPost = (new MainServletSupport).mainservletAction
+class AuthFilterImplementation(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with AppSupport {
+  import bindingModule._
+
+  def authenticationCheck = for {
+    _ <- pushComment("start AuthFilter authentication check")
+    _ <- appspotHttpsCheck
+    _ <- middleOfAuthFlowCheck
+    _ <- isRobotCheck
+    _ <- getAccessToken
+    _ <- pushComment("finished authentication check")
+    _ <- YieldToNextFilter.liftState
+  } yield ()
+
+  def appspotHttpsCheck = for {
+    hostnameMatches <- hostnameMatches(_.contains("appspot.com"))
+    isInsecure <- urlComponentMatches(_.getScheme)(_ == "http", "failed to get http scheme")
+    redirectRequired <- if (hostnameMatches && isInsecure) redirectToHttps else noOp
+  } yield ()
+
+  def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "in middle of oauth2 callback")
+
+  def isRobotCheck = yieldToNextFilterIfFirstElementOfPathMatches("notify", "Skipping auth check for notify servlet")
+
+  def getAccessToken: CombinedStateAndFailure[String] = {
+    val tokenFetcher = for {
+      userId <- getUserId
+      credential <- getCredential
+      accessToken <- safelyCall(credential.getAccessToken)(
+        returnedValid = _.right[EarlyReturn],
+        returnedNull = FailedCondition("no access token").left,
+        threwException = t => WrappedFailure(t).left).liftState
+    } yield accessToken
+
+    // The first computation can fail with a left value.  If that
+    // happens, redirect to /oauth2callback
+
+    for {
+      failureUrl <- getGenericUrlWithNewPath("/oauth2callback")
+      result <- tokenFetcher.leftMap(error => ExecuteRedirect(failureUrl, "failed to get access token"))
+    } yield result
+  }
 }
 
-class NotifyServletImpl(implicit val bindingModule: BindingModule) extends AppSupport {
+class AuthServletImplementation(implicit val bindingModule: BindingModule) extends AppSupport {
+  val mirrorOps = inject[MirrorOps]
+  import mirrorOps._
+
+  val CONTACT_NAME = "Scala Quick Start"
+
+  def startOAuth2Dance = for {
+    _ <- pushComment("starting OAuth2 dance")
+    flow <- newAuthorizationCodeFlow
+    redirectUrl <- getGenericUrlWithNewPath("/oauth2callback")
+    authorizationCodeRequestUrl <- flow.newAuthorizationUrl
+      .setRedirectUri(redirectUrl.toString)
+      .set("approval_prompt", "force")
+      .mapExceptionOrNullToLeft("failed to create new authorization url")
+
+    _ <- ExecuteRedirect(authorizationCodeRequestUrl, "continuing oauth2 dance by redirecting to the remote auth url").liftState
+  } yield ()
+
+  def finishOAuth2Dance(code: String) = for {
+    _ <- pushComment("finishing OAuth2 dance")
+
+    flow <- newAuthorizationCodeFlow
+    oauth2callbackUrl <- getGenericUrlWithNewPath("/oauth2callback")
+
+    tokenResponse <- flow.newTokenRequest(code)
+      .setRedirectUri(oauth2callbackUrl.toString)
+      .execute
+      .mapExceptionToLeft("newTokenRequest failed")
+
+    userId <- tokenResponse.asInstanceOf[GoogleTokenResponse]
+      .parseIdToken
+      .getPayload
+      .getUserId
+      .mapExceptionToLeft("extracting userid from google token response failed")
+
+    _ <- pushComment("Code exchange worked. User " + userId + " logged in.")
+
+    _ <- setUserId(userId)
+
+    responseToken <- flow.createAndStoreCredential(tokenResponse, userId)
+      .mapExceptionOrNullToLeft("createAndStoreCredential failed")
+
+    _ <- bootstrapNewUser(userId)
+
+    _ <- redirectToNewPath("/", "finished oauth2 dance")
+  } yield ()
+
+  def capableOfSubscriptions = false
+
+  def bootstrapNewUser(userId: String) = for {
+    _ <- pushComment("bootstrapping new user")
+
+    credential <- getCredential
+
+    catUrl <- getGenericUrl
+    imageUrls = List(catUrl.newRawPath("/static/images/chipotle-tube-640x360.jpg"))
+
+    starterProjectContact <- (new Contact)
+      .setId(CONTACT_NAME)
+      .setDisplayName(CONTACT_NAME)
+      .setImageUrls(imageUrls.map(_.toString).asJava)
+      .mapExceptionOrNullToLeft("failed to create new contact")
+
+    insertedContact <- insertContact(credential, starterProjectContact).liftState
+    subscription <- if (capableOfSubscriptions)
+      insertSubscription(
+        credential,
+        catUrl.newRawPath("/notify").toString,
+        userId,
+        "timeline")
+    else noOp
+
+    timelineItem <- (new TimelineItem)
+      .setText("Welcome to the Glass Java Quick Start")
+      .setNotification(new NotificationConfig().setLevel("DEFAULT"))
+      .liftState
+  } yield subscription
+
+  def authServletAction = for {
+    error <- getOptionalParameter("error")
+    _ <- if (error.isDefined)
+      addGlasswareEffects(Comment("error parameter exists"),
+        SetResponseContentType("text/plain"),
+        WriteText("\"Something went wrong during auth. Please check your log for details\""))
+    else
+      noOp
+
+    code <- getOptionalParameter("code")
+    result <- code.fold(startOAuth2Dance)(finishOAuth2Dance(_))
+  } yield result
+}
+
+class NotifyServletImplementation(implicit val bindingModule: BindingModule) extends AppSupport {
   import bindingModule._
 
   val jsonFactory = inject[JacksonFactory]
@@ -456,10 +444,22 @@ class NotifyServletImpl(implicit val bindingModule: BindingModule) extends AppSu
 }
 
 class NotifyServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
-  override val implementationOfPost = (new NotifyServletImpl).handlePost
+  override val implementationOfPost = (new NotifyServletImplementation).handlePost
 }
 
 class SignOutServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
   override val implementationOfPost = signout
+}
+
+class AuthServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
+  override val implementationOfGet = (new AuthServletImplementation).authServletAction
+}
+
+class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
+  val filterImplementation = (new AuthFilterImplementation).authenticationCheck
+}
+
+class MainServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
+  override val implementationOfPost = (new MainServletImplementation).mainservletAction
 }
 
