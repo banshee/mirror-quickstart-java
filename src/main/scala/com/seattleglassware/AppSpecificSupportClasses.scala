@@ -8,6 +8,7 @@ import java.util.Properties
 import scala.collection.JavaConversions.seqAsJavaList
 import scala.collection.JavaConverters.collectionAsScalaIterableConverter
 import scala.language.higherKinds
+import scala.PartialFunction._
 import scala.util.control.Exception.ultimately
 import com.escalatesoft.subcut.inject.BindingModule
 import com.escalatesoft.subcut.inject.Injectable
@@ -44,7 +45,7 @@ import java.io.BufferedReader
 import com.google.api.services.mirror.model.Notification
 import com.seattleglassware.GlasswareTypes.stateTypes._
 
-trait StatefulParameterOperations extends Injectable {
+trait AppSupport extends StatefulParameterOperations {
   implicit val bindingModule: BindingModule
 
   private val oauthPropertiesFileLocation = inject[String](OAuthPropertiesFileLocation)
@@ -54,7 +55,77 @@ trait StatefulParameterOperations extends Injectable {
   private val glassScope = inject[String](GlassScope)
   private val applicationName = inject[String](ApplicationName)
 
-  // State methods
+  def unknownCommand(unknownCommand: String) = modifyGlasswareEffects(
+    xs => Comment(s"Unknown commmand $unknownCommand") :: AddMessage("I don't know how to do that") :: xs)
+
+  def newAuthorizationCodeFlow(): CombinedStateAndFailure[AuthorizationCodeFlow] = for {
+    authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation))
+      .mapExceptionOrNullToLeft(s"open auth file oauthPropertiesFileLocation")
+    _ <- pushEffect(CleanupCloseable(authPropertiesStream))
+
+    authProperties = new Properties
+
+    _ <- authProperties
+      .load(authPropertiesStream)
+      .mapExceptionOrNullToLeft("loading properties stream")
+
+    clientId <- authProperties.getProperty("client_id").
+      mapExceptionOrNullToLeft("error getting client id")
+
+    clientSecret <- authProperties.getProperty("client_secret").
+      mapExceptionOrNullToLeft("error getting client secret")
+
+    result <- (new GoogleAuthorizationCodeFlow.Builder(
+      urlFetchTransport,
+      jacksonFactory,
+      clientId,
+      clientSecret,
+      Seq(glassScope))
+      .setAccessType("offline")
+      .setCredentialStore(credentialStore)
+      .build())
+      .mapExceptionOrNullToLeft("failed to build authorization flow")
+  } yield result
+
+  def getCredential = for {
+    _ <- pushComment("getting credential (userId)")
+    userId <- getUserId
+    _ <- pushComment("getting credential")
+    credential <- getCredentialForSpecifiedUser(userId)
+  } yield credential
+
+  def signout = for {
+    userId <- getUserId
+    credential <- getCredential
+    _ <- credentialStore
+      .delete(userId, credential)
+      .mapExceptionOrNullToLeft("could not delete credential from storage")
+    _ <- pushEffect(RemoveSessionAttribute("userId"))
+    _ <- addGlasswareEffect(SignOut)
+  } yield ()
+
+  def getCredentialForSpecifiedUser(userId: String) = for {
+    authorizationFlow <- newAuthorizationCodeFlow
+    credential <- authorizationFlow.loadCredential(userId)
+      .mapExceptionOrNullToLeft("error locating credential")
+  } yield credential
+
+  def getCredentialForNotification(notification: Notification) = for {
+    userId <- notification.getUserToken
+      .mapExceptionOrNullToLeft("could not get user id from notification")
+    credential <- getCredentialForSpecifiedUser(userId)
+  } yield credential
+
+  def clearUserId(userId: String) = for {
+    credential <- getCredential
+    deleted <- credentialStore.delete(userId, credential)
+      .mapExceptionToLeft("failed to delete credential from store")
+  } yield deleted
+
+  def setUserId(uid: String) = pushEffect(SetSessionAttribute("userId", uid))
+}
+
+trait StatefulParameterOperations extends Injectable {
   implicit class OrElseMessage[T](x: CombinedStateAndFailure[T]) {
     private def insertStateMessage(e: EarlyReturn, s: String) = for {
       _ <- addGlasswareEffect(LogAndIgnore(e))
@@ -175,6 +246,17 @@ trait StatefulParameterOperations extends Injectable {
     redirectCommand <- ExecuteRedirect(u, reason).exitProcessing
   } yield redirectCommand
 
+  def yieldToNextFilterIfFirstElementOfPathMatches(s: String, explanation: String) = for {
+    pathStartsWithNotify <- urlPathMatches(cond(_) { case h :: t if h == s => true }, "failed to get path")
+    _ <- if (pathStartsWithNotify) yieldWithComment(explanation) else noOp
+  } yield ()
+
+  def yieldWithComment(s: String) = for {
+    _ <- pushComment("yielding to next filter")
+    _ <- pushComment(s)
+    _ <- YieldToNextFilter.liftState
+  } yield ()
+
   def getGenericUrlWithNewPath(path: String) =
     getGenericUrl.map(_.newRawPath(path))
 
@@ -198,7 +280,6 @@ trait StatefulParameterOperations extends Injectable {
   def parameterExists(parameterName: String)(req: HttpRequestWrapper) =
     parameterMatches("error", _ != null)(req)
 
-
   def readUpToNLines(reader: scala.io.Source, n: Int) =
     reader.getLines
       .takeWhile(doAfterNTimes(n, throw new IOException("too many executions")))
@@ -213,74 +294,4 @@ trait StatefulParameterOperations extends Injectable {
     }
   }
 
-  // App-specific methods
-
-  def unknownCommand(unknownCommand: String) = modifyGlasswareEffects(
-    xs => Comment(s"Unknown commmand $unknownCommand") :: AddMessage("I don't know how to do that") :: xs)
-
-  def newAuthorizationCodeFlow(): CombinedStateAndFailure[AuthorizationCodeFlow] = for {
-    authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation))
-      .mapExceptionOrNullToLeft(s"open auth file oauthPropertiesFileLocation")
-    _ <- pushEffect(CleanupCloseable(authPropertiesStream))
-
-    authProperties = new Properties
-
-    _ <- authProperties
-      .load(authPropertiesStream)
-      .mapExceptionOrNullToLeft("loading properties stream")
-
-    clientId <- authProperties.getProperty("client_id").
-      mapExceptionOrNullToLeft("error getting client id")
-
-    clientSecret <- authProperties.getProperty("client_secret").
-      mapExceptionOrNullToLeft("error getting client secret")
-
-    result <- (new GoogleAuthorizationCodeFlow.Builder(
-      urlFetchTransport,
-      jacksonFactory,
-      clientId,
-      clientSecret,
-      Seq(glassScope))
-      .setAccessType("offline")
-      .setCredentialStore(credentialStore)
-      .build())
-      .mapExceptionOrNullToLeft("failed to build authorization flow")
-  } yield result
-
-  def getCredential = for {
-    _ <- pushComment("getting credential (userId)")
-    userId <- getUserId
-    _ <- pushComment("getting credential")
-    credential <- getCredentialForSpecifiedUser(userId)
-  } yield credential
-
-  def signout = for {
-    userId <- getUserId
-    credential <- getCredential
-    _ <- credentialStore
-      .delete(userId, credential)
-      .mapExceptionOrNullToLeft("could not delete credential from storage")
-    _ <- pushEffect(RemoveSessionAttribute("userId"))
-    _ <- addGlasswareEffect(SignOut)
-  } yield ()
-
-  def getCredentialForSpecifiedUser(userId: String) = for {
-    authorizationFlow <- newAuthorizationCodeFlow
-    credential <- authorizationFlow.loadCredential(userId)
-      .mapExceptionOrNullToLeft("error locating credential")
-  } yield credential
-
-  def getCredentialForNotification(notification: Notification) = for {
-    userId <- notification.getUserToken
-      .mapExceptionOrNullToLeft("could not get user id from notification")
-    credential <- getCredentialForSpecifiedUser(userId)
-  } yield credential
-
-  def clearUserId(userId: String) = for {
-    credential <- getCredential
-    deleted <- credentialStore.delete(userId, credential)
-      .mapExceptionToLeft("failed to delete credential from store")
-  } yield deleted
-
-  def setUserId(uid: String) = pushEffect(SetSessionAttribute("userId", uid))
 }

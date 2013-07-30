@@ -37,8 +37,18 @@ import scalaz.State
 import scalaz.StateT
 import scalaz._
 
-class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+class AuthFilterSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with AppSupport {
   import bindingModule._
+
+  def authenticationCheck = for {
+    _ <- pushComment("start AuthFilter authentication check")
+    _ <- appspotHttpsCheck
+    _ <- middleOfAuthFlowCheck
+    _ <- isRobotCheck
+    _ <- getAccessToken
+    _ <- pushComment("finished authentication check")
+    _ <- YieldToNextFilter.liftState
+  } yield ()
 
   def appspotHttpsCheck = for {
     hostnameMatches <- hostnameMatches(_.contains("appspot.com"))
@@ -47,17 +57,6 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
   } yield ()
 
   def middleOfAuthFlowCheck = yieldToNextFilterIfFirstElementOfPathMatches("oauth2callback", "in middle of oauth2 callback")
-
-  def yieldWithComment(s: String) = for {
-    _ <- pushComment("yielding to next filter")
-    _ <- pushComment(s)
-    _ <- YieldToNextFilter.liftState
-  } yield ()
-
-  def yieldToNextFilterIfFirstElementOfPathMatches(s: String, explanation: String) = for {
-    pathStartsWithNotify <- urlPathMatches(cond(_) { case h :: t if h == s => true }, "failed to get path")
-    _ <- if (pathStartsWithNotify) yieldWithComment(explanation) else noOp
-  } yield ()
 
   def isRobotCheck = yieldToNextFilterIfFirstElementOfPathMatches("notify", "Skipping auth check for notify servlet")
 
@@ -79,25 +78,13 @@ class AuthFilterSupport(implicit val bindingModule: BindingModule) extends State
       result <- tokenFetcher.leftMap(error => ExecuteRedirect(failureUrl, "failed to get access token"))
     } yield result
   }
-
-  def authenticationCheck = for {
-    _ <- pushComment("start AuthFilter authentication check")
-    _ <- appspotHttpsCheck
-    _ <- middleOfAuthFlowCheck
-    _ <- isRobotCheck
-    _ <- getAccessToken
-    _ <- pushComment("finished authentication check")
-    _ <- YieldToNextFilter.liftState
-  } yield ()
 }
 
 class AuthFilter extends FilterInjectionShim()(ProjectConfiguration.configuration) with NonInitializedFilter {
   val filterImplementation = (new AuthFilterSupport).authenticationCheck
 }
 
-// ----- 
-
-class AuthServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+class AuthServletSupport(implicit val bindingModule: BindingModule) extends AppSupport {
   val mirrorOps = inject[MirrorOps]
   import mirrorOps._
 
@@ -193,7 +180,7 @@ class AuthServlet extends ServletInjectionShim()(ProjectConfiguration.configurat
   override val implementationOfGet = (new AuthServletSupport).authServletAction
 }
 
-class MainServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+class MainServletSupport(implicit val bindingModule: BindingModule) extends AppSupport {
   val m = inject[MirrorOps]
 
   def mainservletAction = for {
@@ -378,7 +365,7 @@ class MainServlet extends ServletInjectionShim()(ProjectConfiguration.configurat
   override val implementationOfPost = (new MainServletSupport).mainservletAction
 }
 
-class NotifyServletImpl(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+class NotifyServletImpl(implicit val bindingModule: BindingModule) extends AppSupport {
   import bindingModule._
 
   val jsonFactory = inject[JacksonFactory]

@@ -45,7 +45,7 @@ import javax.servlet.http.HttpServletResponse
 import javax.servlet.FilterChain
 import com.google.api.client.util.ByteStreams
 
-trait ServerPlumbing extends StatefulParameterOperations with Injectable {
+trait ServerPlumbing extends AppSupport {
   implicit val bindingModule: BindingModule
 
   val log = inject[java.util.logging.Logger]

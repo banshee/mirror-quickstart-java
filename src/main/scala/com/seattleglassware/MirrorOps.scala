@@ -58,7 +58,7 @@ import scalaz.State
 import scalaz.\/
 import scalaz.\/-
 
-class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable with StatefulParameterOperations {
+class MirrorOps(implicit val bindingModule: BindingModule) extends AppSupport {
   import com.seattleglassware.Misc._
   import HttpRequestWrapper._
 
@@ -218,3 +218,4 @@ class MirrorOps(implicit val bindingModule: BindingModule) extends Injectable wi
       .mapExceptionToLeft("failed to create batch")
   } yield batch
 }
+

@@ -41,7 +41,7 @@ import scalaz.\/
 import com.seattleglassware.GlasswareTypes._
 import com.seattleglassware.GlasswareTypes.stateTypes._
 
-class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with Injectable {
+class AttachmentProxyServletSupport(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with AppSupport with Injectable {
   import bindingModule._
 
   val mirrorOps = inject[MirrorOps]
