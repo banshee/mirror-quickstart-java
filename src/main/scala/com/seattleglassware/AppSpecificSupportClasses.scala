@@ -54,6 +54,7 @@ trait StatefulParameterOperations extends Injectable {
   private val glassScope = inject[String](GlassScope)
   private val applicationName = inject[String](ApplicationName)
 
+  // State methods
   implicit class OrElseMessage[T](x: CombinedStateAndFailure[T]) {
     private def insertStateMessage(e: EarlyReturn, s: String) = for {
       _ <- addGlasswareEffect(LogAndIgnore(e))
@@ -64,8 +65,44 @@ trait StatefulParameterOperations extends Injectable {
     }
   }
 
-  def unknownCommand(unknownCommand: String) = modifyGlasswareEffects(
-    xs => Comment(s"Unknown commmand $unknownCommand") :: AddMessage("I don't know how to do that") :: xs)
+  /**
+   * Pushes the given [[com.seattleglassware.GlasswareTypes.Effect]]
+   * onto the state.
+   */
+  def pushEffect(e: Effect) = for {
+    GlasswareState(req, items) <- getGlasswareState
+    _ <- put(GlasswareState(req, e :: items)).liftState
+  } yield ()
+
+  /**
+   * Pushes the given string onto the state as a
+   * [[com.seattleglassware.GlasswareTypes.Comment]].
+   */
+  def pushComment(s: String) = pushEffect(Comment(s))
+
+  def getGlasswareState = get[GlasswareState].liftState
+
+  def addGlasswareEffect(e: Effect) = modifyGlasswareEffects(xs => e :: xs)
+  def addGlasswareEffects(es: Effect*) = modifyGlasswareEffects(xs => es.toList ++ xs)
+
+  /**
+   * Note: most of the time, use addGlasswareEffect to add
+   * an effect to the state.
+   */
+  def modifyGlasswareState(s: GlasswareState => GlasswareState) =
+    modify[GlasswareState](s).liftState
+
+  /**
+   * Note: most of the time, use addGlasswareEffect to add
+   * an effect to the state.
+   */
+  def modifyGlasswareEffects(s: List[Effect] => List[Effect]) = for {
+    _ <- modifyGlasswareState(x => effectsThroughGlasswareState.mod(s, x))
+  } yield ()
+
+  val noOp = ().right[EarlyReturn].liftState
+
+  // Http-related methods
 
   def getInputBufferedReader = for {
     GlasswareState(request, _) <- getGlasswareState
@@ -99,42 +136,7 @@ trait StatefulParameterOperations extends Injectable {
     parameterValue <- Option(req.getParameter(parameterName)).right[EarlyReturn].liftState
   } yield parameterValue
 
-  /**
-   * Pushes the given [[com.seattleglassware.GlasswareTypes.Effect]]
-   * onto the state.
-   */
-  def pushEffect(e: Effect) = for {
-    GlasswareState(req, items) <- getGlasswareState
-    _ <- put(GlasswareState(req, e :: items)).liftState
-  } yield ()
-
-  /**
-   * Pushes the given string onto the state as a
-   * [[com.seattleglassware.GlasswareTypes.Comment]].
-   */
-  def pushComment(s: String) = pushEffect(Comment(s))
-
   def getUserId = getSessionAttribute("userId")
-
-  def getGlasswareState = get[GlasswareState].liftState
-
-  /**
-   * Note: most of the time, use addGlasswareEffect to add
-   * an effect to the state.
-   */
-  def modifyGlasswareState(s: GlasswareState => GlasswareState) =
-    modify[GlasswareState](s).liftState
-
-  /**
-   * Note: most of the time, use addGlasswareEffect to add
-   * an effect to the state.
-   */
-  def modifyGlasswareEffects(s: List[Effect] => List[Effect]) = for {
-    _ <- modifyGlasswareState(x => effectsThroughGlasswareState.mod(s, x))
-  } yield ()
-
-  def addGlasswareEffect(e: Effect) = modifyGlasswareEffects(xs => e :: xs)
-  def addGlasswareEffects(es: Effect*) = modifyGlasswareEffects(xs => es.toList ++ xs)
 
   def message(s: String) = addGlasswareEffect(AddMessage(s))
 
@@ -157,8 +159,6 @@ trait StatefulParameterOperations extends Injectable {
     pathMatches <- urlPathMatches(fn, explanation)
     redirect <- if (pathMatches) YieldToNextFilter.liftState else noOp
   } yield 1
-
-  val noOp = ().right[EarlyReturn].liftState
 
   def redirectToHttps = for {
     url <- getGenericUrl
@@ -197,6 +197,26 @@ trait StatefulParameterOperations extends Injectable {
 
   def parameterExists(parameterName: String)(req: HttpRequestWrapper) =
     parameterMatches("error", _ != null)(req)
+
+
+  def readUpToNLines(reader: scala.io.Source, n: Int) =
+    reader.getLines
+      .takeWhile(doAfterNTimes(n, throw new IOException("too many executions")))
+      .foldLeft(new StringBuffer)((acc, s) => acc.append(s))
+
+  def doAfterNTimes[T](n: Int, ex: => Unit) = {
+    var i = 0
+    (s: T) => {
+      if (i >= n) ex
+      i += 1
+      true
+    }
+  }
+
+  // App-specific methods
+
+  def unknownCommand(unknownCommand: String) = modifyGlasswareEffects(
+    xs => Comment(s"Unknown commmand $unknownCommand") :: AddMessage("I don't know how to do that") :: xs)
 
   def newAuthorizationCodeFlow(): CombinedStateAndFailure[AuthorizationCodeFlow] = for {
     authPropertiesStream <- (new FileInputStream(oauthPropertiesFileLocation))
@@ -262,23 +282,5 @@ trait StatefulParameterOperations extends Injectable {
       .mapExceptionToLeft("failed to delete credential from store")
   } yield deleted
 
-  def setUserId(uid: String) = pushEffect(SetSessionAttribute(SessionAttributes.USERID, uid))
-
-  def readUpToNLines(reader: scala.io.Source, n: Int) =
-    reader.getLines
-      .takeWhile(doAfterNTimes(n, throw new IOException("too many executions")))
-      .foldLeft(new StringBuffer)((acc, s) => acc.append(s))
-
-  def doAfterNTimes[T](n: Int, ex: => Unit) = {
-    var i = 0
-    (s: T) => {
-      if (i >= n) ex
-      i += 1
-      true
-    }
-  }
-}
-
-object SessionAttributes {
-  val USERID = "userId"
+  def setUserId(uid: String) = pushEffect(SetSessionAttribute("userId", uid))
 }
