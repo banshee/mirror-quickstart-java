@@ -240,6 +240,7 @@ trait StatefulParameterOperations extends Injectable {
       .delete(userId, credential)
       .mapExceptionOrNullToLeft("could not delete credential from storage")
     _ <- pushEffect(RemoveSessionAttribute("userId"))
+    _ <- addGlasswareEffect(SignOut)
   } yield ()
 
   def getCredentialForSpecifiedUser(userId: String) = for {
