@@ -41,17 +41,6 @@ object Misc {
       (pathParts | List.empty) filter { s => s != null && s.length > 0 }
     }
   }
-  
-//  import scala.language.higherKinds
-//
-//  def transformLeft[F[+_], A, B](x: => EitherT[F, A, B])(y: A => EitherT[F, A, B])(implicit F: Bind[F]): EitherT[F, A, B] = {
-//    val g = x.run
-//    EitherT(F.bind(g) {
-//      case -\/(l) => y(l).run
-//      case \/-(_) => g
-//    })
-//  }
-
 }
 
 trait HttpRequestWrapper {
