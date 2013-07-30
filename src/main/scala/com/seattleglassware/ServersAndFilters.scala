@@ -473,6 +473,6 @@ class NotifyServlet extends ServletInjectionShim()(ProjectConfiguration.configur
 }
 
 class SignOutServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
-  override val implementationOfPost = addGlasswareEffect(SignOut)
+  override val implementationOfPost = signout
 }
 
