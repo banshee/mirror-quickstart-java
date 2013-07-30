@@ -1,4 +1,4 @@
-Google Mirror API's Quickstart for Java
+Mirror API Quickstart for Scala and Scalaz
 ========================
 
 This is a Scala port of Google's Quickstart for Java code (https://developers.google.com/glass/quickstart/java).
