@@ -321,12 +321,6 @@ class MainServletSupport(implicit val bindingModule: BindingModule) extends Stat
     _ <- message("Contact has been deleted.")
   } yield ()
 
-  def ifCondition[T](condition: => Boolean, result: CombinedStateAndFailure[T]) =
-    if (condition) result else noOp
-
-  def ifOption[T, U](opt: => Option[T], result: T => CombinedStateAndFailure[U]): CombinedStateAndFailure[_] =
-    if (opt.isDefined) result(opt.get) else noOp
-
   def insertItemAllUsers = for {
     url <- getGenericUrl
 
