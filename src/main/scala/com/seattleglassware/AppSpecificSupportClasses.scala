@@ -164,17 +164,6 @@ trait StatefulParameterOperations extends Injectable {
     r <- ExecuteRedirect(url.newScheme("https"), "redirecting to https").liftState
   } yield ()
 
-  def ifAll[T, U](
-    predicates: Seq[Function[HttpRequestWrapper, Boolean]],
-    trueEffects: HttpRequestWrapper => List[Effect],
-    trueResult: T \/ U,
-    falseResult: T \/ U) =
-    EitherT[StateWithFixedStateType, T, U](State[GlasswareState, T \/ U] {
-      case state @ GlasswareState(req, effects) =>
-        val alltrue = predicates.forall { _(req) }
-        if (alltrue) (GlasswareState(req, trueEffects(req).reverse ++ effects), trueResult) else (state, falseResult)
-    })
-
   def getGenericUrl = for {
     GlasswareState(req, _) <- getGlasswareState
     url = req.getRequestGenericUrl
