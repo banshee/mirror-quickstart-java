@@ -443,6 +443,31 @@ class NotifyServletImplementation(implicit val bindingModule: BindingModule) ext
 
 }
 
+class AttachmentProxyServletImplementation(implicit val bindingModule: BindingModule) extends StatefulParameterOperations with AppSupport with Injectable {
+  import bindingModule._
+
+  val mirrorOps = inject[MirrorOps]
+  import mirrorOps._
+  
+  def attachmentProxyAction = for {
+    attachmentId <- getParameter("attachment")
+    timelineItemId <- getParameter("timelineItem")
+    
+    userid <- getUserId
+    credential <- getCredential
+    mirror <- getMirror(credential)
+    contentType <- getAttachmentContentType(mirror, timelineItemId, attachmentId)
+    attachmentInputStream <- getAttachmentInputStream(credential, timelineItemId, attachmentId)
+
+    _ <- pushEffect(SetResponseContentType(contentType))
+    _ <- pushEffect(CopyStreamToOutput(attachmentInputStream))
+  } yield ()
+}
+
+class AttachmentProxyServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
+  override val implementationOfGet = (new AttachmentProxyServletImplementation).attachmentProxyAction
+}
+
 class NotifyServlet extends ServletInjectionShim()(ProjectConfiguration.configuration) {
   override val implementationOfPost = (new NotifyServletImplementation).handlePost
 }
