@@ -2,6 +2,7 @@ package com.seattleglassware
 
 import java.io.FileInputStream
 import java.io.InputStream
+import java.io.IOException
 import java.util.logging.Logger
 import java.util.Properties
 import scala.collection.JavaConversions.seqAsJavaList
@@ -95,7 +96,7 @@ trait StatefulParameterOperations extends Injectable {
    */
   def getOptionalParameter(parameterName: String): CombinedStateAndFailure[Option[String]] = for {
     GlasswareState(req, _) <- getGlasswareState
-    parameterValue <- req.getParameter(parameterName).right[EarlyReturn].liftState
+    parameterValue <- Option(req.getParameter(parameterName)).right[EarlyReturn].liftState
   } yield parameterValue
 
   /**

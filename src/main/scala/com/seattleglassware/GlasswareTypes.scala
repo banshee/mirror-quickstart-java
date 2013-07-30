@@ -23,7 +23,6 @@ import com.seattleglassware.BindingIdentifiers.OAuthPropertiesFileLocation
 import com.seattleglassware.EitherTWithState._
 import com.seattleglassware.GlasswareTypes._
 import com.seattleglassware.Misc._
-import HttpRequestWrapper.HttpServletRequestWrapper
 import JavaInterop.safelyCall
 import javax.servlet.FilterChain
 import javax.servlet.ServletRequest
@@ -106,10 +105,10 @@ object GlasswareTypes {
       t => WrappedFailure(t, extra.some).left).liftState
   }
 
-  sealed case class GlasswareState(req: HttpRequestWrapper, effects: List[Effect] = List.empty)
+  sealed case class GlasswareState(req: HttpServletRequest, effects: List[Effect] = List.empty)
 
   val effectsThroughGlasswareState = Lens.lensg[GlasswareState, List[Effect]](set = gs => effects => gs.copy(effects = effects),
     get = gs => gs.effects)
-  val requestThroughGlasswareState = Lens.lensg[GlasswareState, HttpRequestWrapper](set = gs => req => gs.copy(req = req),
+  val requestThroughGlasswareState = Lens.lensg[GlasswareState, HttpServletRequest](set = gs => req => gs.copy(req = req),
     get = gs => gs.req)
 }
