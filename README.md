@@ -29,3 +29,8 @@ do a few things:
 Threaded through those successes and failures are additions to state (that''s the state monad), so you can do things
 like have a function return a success and at the same time push an operation (like set a session variable)
 onto the state object.
+
+## Not complete ported
+
+Not everything is ported to Scala.  The jsp pages are untouched, and there are a couple java 
+classess (ListableAppEngineCredentialStore) that remain.  Moving these over to Scala would be nice for completeness, but the existing Scala has enough samples that I don''t think finishing the remaining Java classes really adds much.
