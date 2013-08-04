@@ -224,7 +224,7 @@ trait StatefulParameterOperations extends Injectable {
   } yield x
 
   def getSessionAttribute(name: String) =
-    getSessionAttributeFromRequest(name) orElse findSetSessionInState(name)
+    findSetSessionInState(name) orElse getSessionAttributeFromRequest(name)
 
   def yieldToNextFilterIfPathMatches(fn: PartialFunction[List[String], Boolean], explanation: String) = for {
     pathMatches <- urlPathMatches(fn, explanation)
