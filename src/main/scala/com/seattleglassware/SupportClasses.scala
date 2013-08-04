@@ -68,11 +68,6 @@ object HttpRequestWrapper {
   case object Missing extends HttpRequestType
   case object Other extends HttpRequestType
 
-  //  abstract sealed class TypedOptionalSessionAttributeResult[T]
-  //  case class Success[T](x: T) extends TypedOptionalSessionAttributeResult[T]
-  //  case class MissingAttribute[T](attrName: String) extends TypedOptionalSessionAttributeResult[T]
-  //  case class IncorrectType[T](attrName: String, result: AnyRef) extends TypedOptionalSessionAttributeResult[T]
-
   implicit class HttpServletRequestWrapper(r: HttpServletRequest) extends HttpRequestWrapper {
     def getParameter(s: String) = Option(r.getParameter(s))
     def getSessionAttribute[T](s: String): EarlyReturn \/ T =
